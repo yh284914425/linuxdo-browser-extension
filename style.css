@@ -60,6 +60,11 @@
   background: #3b3b3b;
 }
 
+#linuxdo-auto-panel button.warning {
+  background: #e74c3c;
+  width: 100%;
+}
+
 #linuxdo-auto-panel input[type="number"] {
   width: 84px;
   padding: 4px 6px;

@@ -21,11 +21,24 @@
   const BATCH_JITTER = Array.isArray(BATCH_DEFAULTS.jitterMs) ? BATCH_DEFAULTS.jitterMs : [2000, 5000];
   const HEARTBEAT_INTERVAL_MS = Math.max(2000, Math.floor(OWNER_TTL_MS / 2));
   const FETCH_TIMEOUT_MS = 8000;
+  const SESSION_ID_KEY = "__linuxdoAutoInstanceId";
   const INSTANCE_ID = (() => {
     try {
-      return crypto.randomUUID();
+      const existing = sessionStorage.getItem(SESSION_ID_KEY);
+      if (existing) {
+        return existing;
+      }
+      const newId = crypto.randomUUID();
+      sessionStorage.setItem(SESSION_ID_KEY, newId);
+      return newId;
     } catch (err) {
-      return `linuxdo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const fallback = `linuxdo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      try {
+        sessionStorage.setItem(SESSION_ID_KEY, fallback);
+      } catch (e) {
+        // ignore
+      }
+      return fallback;
     }
   })();
 
@@ -202,7 +215,9 @@
     const right = Array.isArray(b) ? b : [];
     if (left.length !== right.length) return false;
     for (let i = 0; i < left.length; i += 1) {
-      if (left[i].id !== right[i].id || left[i].ts !== right[i].ts) {
+      const l = left[i];
+      const r = right[i];
+      if (!l || !r || l.id !== r.id || l.ts !== r.ts) {
         return false;
       }
     }
@@ -307,6 +322,9 @@
         <button id="linuxdo-toggle">开始</button>
         <button id="linuxdo-restart" class="secondary">重新开始</button>
       </div>
+      <div class="button-row" id="linuxdo-takeover-row" style="display:none;">
+        <button id="linuxdo-takeover" class="warning">强制接管</button>
+      </div>
     `;
 
     document.body.appendChild(panel);
@@ -314,6 +332,20 @@
     const toggleBtn = panel.querySelector("#linuxdo-toggle");
     const restartBtn = panel.querySelector("#linuxdo-restart");
     const targetInput = panel.querySelector("#linuxdo-target");
+    const takeoverBtn = panel.querySelector("#linuxdo-takeover");
+    const takeoverRow = panel.querySelector("#linuxdo-takeover-row");
+
+    takeoverBtn.addEventListener("click", async () => {
+      await stateLoaded;
+      await setState({
+        ownerId: null,
+        ownerHeartbeat: 0,
+        running: false,
+        fetching: false,
+        queueBuilding: false
+      });
+      updatePanel();
+    });
 
     const commitTarget = async (value) => {
       const finalValue = LOGIC && LOGIC.sanitizeTargetCount
@@ -440,6 +472,7 @@
     const toggleBtn = panel.querySelector("#linuxdo-toggle");
     const restartBtn = panel.querySelector("#linuxdo-restart");
     const targetInput = panel.querySelector("#linuxdo-target");
+    const takeoverRow = panel.querySelector("#linuxdo-takeover-row");
 
     const target = LOGIC && LOGIC.sanitizeTargetCount
       ? LOGIC.sanitizeTargetCount(currentState.targetCount, LOGIC.DEFAULTS)
@@ -486,7 +519,12 @@
     if (targetInput && document.activeElement !== targetInput) {
       targetInput.value = target;
     }
+    if (takeoverRow) {
+      takeoverRow.style.display = otherOwnerActive ? "flex" : "none";
+    }
   }
+
+  let storageListenerAdded = false;
 
   function loadState() {
     chrome.storage.local.get(DEFAULT_STATE, (state) => {
@@ -495,13 +533,16 @@
       stateLoadedResolve();
     });
 
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local") return;
-      for (const [key, change] of Object.entries(changes)) {
-        currentState[key] = change.newValue;
-      }
-      updatePanel();
-    });
+    if (!storageListenerAdded) {
+      storageListenerAdded = true;
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        for (const [key, change] of Object.entries(changes)) {
+          currentState[key] = change.newValue;
+        }
+        updatePanel();
+      });
+    }
   }
 
   function setState(patch) {
@@ -527,12 +568,19 @@
 
   async function fetchMoreFromApi(runId) {
     const isActive = () => currentState.running && currentState.runId === runId && isOwnerSelf();
-    if (!isActive()) return null;
-    if (currentState.fetching) return null;
+    if (!isActive()) {
+      console.log("[linuxdo-auto] fetchMoreFromApi: 不活跃，跳过");
+      return null;
+    }
+    if (currentState.fetching) {
+      console.log("[linuxdo-auto] fetchMoreFromApi: 已在获取中，跳过");
+      return null;
+    }
 
     const targetCount = getTargetCount();
     const existingQueue = Array.isArray(currentState.queue) ? currentState.queue : [];
     if (existingQueue.length >= targetCount) {
+      console.log(`[linuxdo-auto] fetchMoreFromApi: 队列已满 ${existingQueue.length}>=${targetCount}，跳过`);
       return { added: 0 };
     }
 
@@ -541,16 +589,21 @@
       targetCount - existingQueue.length
     );
     if (batchSize <= 0) {
+      console.log("[linuxdo-auto] fetchMoreFromApi: batchSize<=0，跳过");
       return { added: 0 };
     }
 
     const maxPages = Number.isFinite(currentState.maxPages) ? currentState.maxPages : BATCH_DEFAULTS.maxPages;
     let nextUrl = currentState.nextApiUrl || API_LATEST_URL;
     if (!nextUrl) {
+      console.log("[linuxdo-auto] fetchMoreFromApi: 没有下一页URL，跳过");
       return { added: 0 };
     }
 
+    console.log(`[linuxdo-auto] fetchMoreFromApi: 开始获取，目标=${targetCount}，当前队列=${existingQueue.length}，batchSize=${batchSize}`);
+
     const historySet = historyToSet(getPrunedHistory());
+    console.log(`[linuxdo-auto] fetchMoreFromApi: 历史记录数=${historySet.size}`);
     const seen = new Set(existingQueue.map((url) => normalizeUrl(url)));
     let queue = [...existingQueue];
     let fetchedCount = 0;
@@ -565,14 +618,17 @@
     while (nextUrl && isActive()) {
       const now = Date.now();
       if (nextFetchAt && now < nextFetchAt) {
+        console.log(`[linuxdo-auto] fetchMoreFromApi: 等待冷却 ${Math.ceil((nextFetchAt - now) / 1000)}秒`);
         await sleep(nextFetchAt - now);
         if (!isActive()) break;
       }
 
+      console.log(`[linuxdo-auto] fetchMoreFromApi: 请求 ${nextUrl}`);
       let res;
       try {
         res = await fetchWithTimeout(nextUrl, { credentials: "include" });
       } catch (err) {
+        console.log(`[linuxdo-auto] fetchMoreFromApi: 请求失败 ${err.message}`);
         status = 0;
         break;
       }
@@ -583,6 +639,7 @@
         const schedule = computeNextFetchAt({ status: 429, backoffCount });
         backoffCount = schedule.backoffCount;
         nextFetchAt = schedule.nextFetchAt;
+        console.log(`[linuxdo-auto] fetchMoreFromApi: 429限流，下次获取时间=${new Date(nextFetchAt).toLocaleTimeString()}，backoffCount=${backoffCount}`);
         break;
       }
       if (!res.ok) {
@@ -590,6 +647,7 @@
         const schedule = computeNextFetchAt({ status: res.status, backoffCount });
         backoffCount = schedule.backoffCount;
         nextFetchAt = schedule.nextFetchAt;
+        console.log(`[linuxdo-auto] fetchMoreFromApi: HTTP错误 ${res.status}`);
         break;
       }
 
@@ -597,6 +655,7 @@
       try {
         data = await res.json();
       } catch (err) {
+        console.log(`[linuxdo-auto] fetchMoreFromApi: JSON解析失败`);
         status = 0;
         break;
       }
@@ -605,27 +664,39 @@
         ? data.topic_list.topics
         : [];
 
+      console.log(`[linuxdo-auto] fetchMoreFromApi: 获取到 ${topics.length} 个帖子`);
+
       if (topics.length === 0) {
+        console.log(`[linuxdo-auto] fetchMoreFromApi: 没有更多帖子`);
         break;
       }
 
+      let skippedHistory = 0;
+      let skippedSeen = 0;
       for (const topic of topics) {
         if (!topic || !topic.slug || !topic.id) continue;
-        if (historySet.has(topic.id)) continue;
+        if (historySet.has(topic.id)) {
+          skippedHistory++;
+          continue;
+        }
         const href = new URL(`/t/${topic.slug}/${topic.id}`, location.origin).href;
         const normalized = normalizeUrl(href);
         if (!seen.has(normalized)) {
           seen.add(normalized);
           queue.push(href);
           fetchedCount += 1;
+        } else {
+          skippedSeen++;
         }
         if (fetchedCount >= batchSize) break;
       }
+      console.log(`[linuxdo-auto] fetchMoreFromApi: 添加=${fetchedCount}，跳过(历史)=${skippedHistory}，跳过(已见)=${skippedSeen}`);
 
       const more = data && data.topic_list && data.topic_list.more_topics_url
         ? data.topic_list.more_topics_url
         : null;
       nextUrl = more ? new URL(more, location.origin).href : null;
+      console.log(`[linuxdo-auto] fetchMoreFromApi: 下一页=${nextUrl || '无'}`);
 
       pagesFetched += 1;
       const plan = computeBatchPlanState({
@@ -635,6 +706,7 @@
         fetchedCount
       });
       if (!plan.shouldContinue) {
+        console.log(`[linuxdo-auto] fetchMoreFromApi: 批次完成，pagesFetched=${pagesFetched}，fetchedCount=${fetchedCount}`);
         break;
       }
 
@@ -642,6 +714,8 @@
       backoffCount = schedule.backoffCount;
       nextFetchAt = schedule.nextFetchAt;
     }
+
+    console.log(`[linuxdo-auto] fetchMoreFromApi: 结束，总添加=${fetchedCount}，最终队列=${queue.length}，status=${status}`);
 
     if (isActive()) {
       await setState({
@@ -661,11 +735,17 @@
 
   async function maybeFetchMore(runId, { force = false } = {}) {
     const isActive = () => currentState.running && currentState.runId === runId && isOwnerSelf();
-    if (!isActive()) return null;
+    if (!isActive()) {
+      console.log("[linuxdo-auto] maybeFetchMore: 不活跃，跳过");
+      return null;
+    }
 
     const targetCount = getTargetCount();
     const totalQueued = currentState.queue ? currentState.queue.length : 0;
-    if (totalQueued >= targetCount) return null;
+    if (totalQueued >= targetCount) {
+      console.log(`[linuxdo-auto] maybeFetchMore: 队列已满 ${totalQueued}>=${targetCount}，跳过`);
+      return null;
+    }
 
     const remaining = getRemainingCount();
     const now = Date.now();
@@ -678,13 +758,17 @@
       nextFetchAt: currentState.nextFetchAt
     });
 
+    console.log(`[linuxdo-auto] maybeFetchMore: remaining=${remaining}, lowWater=${lowWater}, canFetch=${canFetch}, force=${force}, nextFetchAt=${currentState.nextFetchAt ? new Date(currentState.nextFetchAt).toLocaleTimeString() : 'N/A'}`);
+
     if (!canFetch) {
       if (force && remaining === 0 && Number.isFinite(currentState.nextFetchAt) && now < currentState.nextFetchAt) {
         const waitMs = currentState.nextFetchAt - now;
+        console.log(`[linuxdo-auto] maybeFetchMore: force模式，等待 ${Math.ceil(waitMs / 1000)} 秒后重试`);
         await sleep(waitMs);
         if (!isActive()) return null;
         return await maybeFetchMore(runId, { force: true });
       }
+      console.log("[linuxdo-auto] maybeFetchMore: 条件不满足，跳过");
       return null;
     }
 
@@ -772,23 +856,33 @@
     await stateLoaded;
     const runId = currentState.runId;
     const isActive = () => currentState.running && currentState.runId === runId && isOwnerSelf();
-    if (!isActive()) return;
+    if (!isActive()) {
+      console.log("[linuxdo-auto] runLoop: 不活跃，退出");
+      return;
+    }
 
     if (window.__linuxdoAutoRunning) {
+      console.log("[linuxdo-auto] runLoop: 已在运行中，退出");
       return;
     }
     window.__linuxdoAutoRunning = true;
 
+    console.log(`[linuxdo-auto] runLoop: 开始，runId=${runId}, index=${currentState.index}, queue=${currentState.queue?.length || 0}`);
+
     try {
       const targetCount = getTargetCount();
+      console.log(`[linuxdo-auto] runLoop: targetCount=${targetCount}`);
 
       if (currentState.queueBuilding) {
+        console.log("[linuxdo-auto] runLoop: queueBuilding=true，尝试获取更多");
         await maybeFetchMore(runId, { force: true });
         if (!isActive()) return;
         if (!currentState.queue || currentState.queue.length === 0) {
+          console.log("[linuxdo-auto] runLoop: 队列为空，从DOM构建");
           const queue = await buildQueueFromDom(targetCount, runId);
           if (!isActive()) return;
           if (!queue || queue.length === 0) {
+            console.log("[linuxdo-auto] runLoop: DOM构建失败，停止");
             if (LOGIC && LOGIC.shouldStopWhenQueueEmpty) {
               if (LOGIC.shouldStopWhenQueueEmpty(currentState)) {
                 await stopRunning();
@@ -805,12 +899,15 @@
       }
 
       if (!currentState.queue || currentState.queue.length === 0) {
+        console.log("[linuxdo-auto] runLoop: 队列为空，尝试获取");
         await maybeFetchMore(runId, { force: true });
         if (!isActive()) return;
         if (!currentState.queue || currentState.queue.length === 0) {
+          console.log("[linuxdo-auto] runLoop: 仍为空，从DOM构建");
           const queue = await buildQueueFromDom(targetCount, runId);
           if (!isActive()) return;
           if (!queue || queue.length === 0) {
+            console.log("[linuxdo-auto] runLoop: DOM构建失败，停止");
             await stopRunning();
             return;
           }
@@ -818,14 +915,31 @@
       }
 
       if (currentState.index >= targetCount) {
+        console.log(`[linuxdo-auto] runLoop: 已达目标 ${currentState.index}>=${targetCount}，停止`);
         await stopRunning();
         return;
       }
 
       if (currentState.index >= (currentState.queue ? currentState.queue.length : 0)) {
+        console.log(`[linuxdo-auto] runLoop: index(${currentState.index}) >= queue.length(${currentState.queue?.length})，尝试获取更多`);
         await maybeFetchMore(runId, { force: true });
         if (!isActive()) return;
         if (currentState.index >= (currentState.queue ? currentState.queue.length : 0)) {
+          // 如果还在冷却中且未达到目标，等待后重试
+          if (currentState.index < targetCount && currentState.backoffCount > 0 && currentState.nextFetchAt > Date.now()) {
+            const waitMs = currentState.nextFetchAt - Date.now();
+            console.log(`[linuxdo-auto] runLoop: 429 冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒后重试...`);
+            await sleep(waitMs);
+            if (!isActive()) return;
+            await maybeFetchMore(runId, { force: true });
+            if (!isActive()) return;
+            if (currentState.index < (currentState.queue ? currentState.queue.length : 0)) {
+              console.log(`[linuxdo-auto] runLoop: 冷却后获取成功，继续`);
+              location.href = currentState.queue[currentState.index];
+              return;
+            }
+          }
+          console.log("[linuxdo-auto] runLoop: 无法获取更多，停止");
           await stopRunning();
           return;
         }
@@ -837,12 +951,16 @@
       const current = normalizeUrl(location.href);
       const target = normalizeUrl(targetUrl);
 
+      console.log(`[linuxdo-auto] runLoop: 当前=${current}, 目标=${target}`);
+
       if (current !== target) {
+        console.log(`[linuxdo-auto] runLoop: 跳转到 ${targetUrl}`);
         location.href = targetUrl;
         return;
       }
 
       const delay = rand(currentState.minDelay, currentState.maxDelay) * 1000;
+      console.log(`[linuxdo-auto] runLoop: 等待 ${Math.ceil(delay / 1000)} 秒`);
       await sleep(delay);
       if (!isActive()) return;
 
@@ -859,23 +977,45 @@
       const topicId = extractTopicId(targetUrl);
       const nextHistory = addHistoryEntry(currentState.history, topicId);
       await setState({ index: currentState.index + 1, history: nextHistory });
+      console.log(`[linuxdo-auto] runLoop: 完成 ${currentState.index}/${targetCount}`);
       if (!isActive()) return;
 
       if (currentState.index >= targetCount) {
+        console.log(`[linuxdo-auto] runLoop: 已达目标，停止`);
         await stopRunning();
         return;
       }
 
       if (currentState.index >= (currentState.queue ? currentState.queue.length : 0)) {
+        console.log(`[linuxdo-auto] runLoop: 队列用完，尝试获取更多`);
         await maybeFetchMore(runId, { force: true });
         if (!isActive()) return;
         if (currentState.index >= (currentState.queue ? currentState.queue.length : 0)) {
+          // 如果还在冷却中且未达到目标，等待后重试
+          if (currentState.index < targetCount && currentState.backoffCount > 0 && currentState.nextFetchAt > Date.now()) {
+            const waitMs = currentState.nextFetchAt - Date.now();
+            console.log(`[linuxdo-auto] runLoop: 429 冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒后重试...`);
+            await sleep(waitMs);
+            if (!isActive()) return;
+            await maybeFetchMore(runId, { force: true });
+            if (!isActive()) return;
+            if (currentState.index < (currentState.queue ? currentState.queue.length : 0)) {
+              console.log(`[linuxdo-auto] runLoop: 冷却后获取成功，继续`);
+              location.href = currentState.queue[currentState.index];
+              return;
+            }
+          }
+          console.log("[linuxdo-auto] runLoop: 无法获取更多，停止");
           await stopRunning();
           return;
         }
       }
 
+      console.log(`[linuxdo-auto] runLoop: 跳转到下一个 ${currentState.queue[currentState.index]}`);
       location.href = currentState.queue[currentState.index];
+    } catch (err) {
+      console.error("[linuxdo-auto] runLoop error:", err);
+      await stopRunning();
     } finally {
       window.__linuxdoAutoRunning = false;
     }
