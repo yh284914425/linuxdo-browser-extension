@@ -4,7 +4,14 @@ const {
   sanitizeTargetCount,
   shouldStopWhenQueueEmpty,
   buildRestartPatch,
-  buildStartPatch
+  buildStartPatch,
+  isOwnerActive,
+  pruneHistory,
+  addHistoryEntry,
+  historyToSet,
+  computeNextFetchAt,
+  shouldFetchMore,
+  computeBatchPlan
 } = require('../logic');
 
 function testSanitizeTargetCount() {
@@ -31,7 +38,53 @@ function testRunIdPatches() {
   });
 }
 
+function testOwnerActive() {
+  const now = 10_000;
+  assert.strictEqual(isOwnerActive('a', now - 1000, { now, ttlMs: 5000 }), true);
+  assert.strictEqual(isOwnerActive('a', now - 6000, { now, ttlMs: 5000 }), false);
+  assert.strictEqual(isOwnerActive(null, now - 1000, { now, ttlMs: 5000 }), false);
+}
+
+function testHistoryHelpers() {
+  const now = 20_000;
+  const entries = [
+    { id: 1, ts: now - 1000 },
+    { id: 2, ts: now - 40_000 }
+  ];
+  const pruned = pruneHistory(entries, { now, ttlMs: 30_000, maxEntries: 10 });
+  assert.deepStrictEqual(pruned.map((e) => e.id), [1]);
+
+  const added = addHistoryEntry(pruned, 3, { now: now + 1000, ttlMs: 30_000, maxEntries: 2 });
+  assert.deepStrictEqual(added.map((e) => e.id), [3, 1]);
+
+  const deduped = addHistoryEntry(added, 1, { now: now + 2000, ttlMs: 30_000, maxEntries: 5 });
+  assert.deepStrictEqual(deduped.map((e) => e.id), [1, 3]);
+
+  const set = historyToSet(deduped);
+  assert.strictEqual(set.has(1), true);
+  assert.strictEqual(set.has(3), true);
+}
+
+function testBatchBackoffHelpers() {
+  const now = 10000;
+  assert.strictEqual(computeNextFetchAt({ now, status: 429, backoffCount: 0 }).nextFetchAt, now + 30000);
+  assert.strictEqual(computeNextFetchAt({ now, status: 429, backoffCount: 1 }).nextFetchAt, now + 60000);
+  assert.strictEqual(computeNextFetchAt({ now, status: 200, backoffCount: 2 }).nextFetchAt <= now + 5000, true);
+
+  assert.strictEqual(shouldFetchMore({ remaining: 20, lowWater: 30, fetching: false, now, nextFetchAt: now }), true);
+  assert.strictEqual(shouldFetchMore({ remaining: 40, lowWater: 30, fetching: false, now, nextFetchAt: now }), false);
+  assert.strictEqual(shouldFetchMore({ remaining: 20, lowWater: 30, fetching: true, now, nextFetchAt: now }), false);
+  assert.strictEqual(shouldFetchMore({ remaining: 20, lowWater: 30, fetching: false, now, nextFetchAt: now + 1000 }), false);
+
+  const plan = computeBatchPlan({ batchSize: 150, maxPages: 3, pagesFetched: 1, fetchedCount: 70 });
+  assert.strictEqual(plan.shouldContinue, true);
+  assert.strictEqual(plan.nextPagesFetched, 2);
+}
+
 testSanitizeTargetCount();
 testQueueEmptyStop();
 testRunIdPatches();
+testOwnerActive();
+testHistoryHelpers();
+testBatchBackoffHelpers();
 console.log('logic tests passed');
