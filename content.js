@@ -288,6 +288,29 @@
     return { nextFetchAt: now + delay, backoffCount: 0 };
   }
 
+  function computeStaleFlagPatchState(state, options = {}) {
+    if (LOGIC && LOGIC.computeStaleFlagPatch) {
+      return LOGIC.computeStaleFlagPatch(state, options);
+    }
+    const ownerActive = isOwnerActive(state.ownerId, state.ownerHeartbeat);
+    if (ownerActive) return {};
+    const next = {};
+    if (state.fetching) next.fetching = false;
+    if (state.queueBuilding) next.queueBuilding = false;
+    return next;
+  }
+
+  function computeFetchSchedulePatchState({ status, backoffCount, now, jitterMs } = {}) {
+    if (LOGIC && LOGIC.computeFetchSchedulePatch) {
+      return LOGIC.computeFetchSchedulePatch({ status, backoffCount, now, jitterMs });
+    }
+    const schedule = computeNextFetchAt({ status, backoffCount });
+    return {
+      nextFetchAt: schedule.nextFetchAt,
+      backoffCount: schedule.backoffCount
+    };
+  }
+
   function shouldFetchMoreState({ remaining, now, nextFetchAt, fetching, lowWater }) {
     if (LOGIC && LOGIC.shouldFetchMore) {
       return LOGIC.shouldFetchMore({
@@ -651,13 +674,26 @@
       } catch (err) {
         console.log(`[linuxdo-auto] fetchMoreFromApi: 请求失败 ${err.message}`);
         status = 0;
+        const schedule = computeFetchSchedulePatchState({
+          status,
+          backoffCount,
+          now: Date.now(),
+          jitterMs: BATCH_JITTER
+        });
+        backoffCount = schedule.backoffCount;
+        nextFetchAt = schedule.nextFetchAt;
         break;
       }
 
       lastFetchAt = Date.now();
       if (res.status === 429) {
         status = 429;
-        const schedule = computeNextFetchAt({ status: 429, backoffCount });
+        const schedule = computeFetchSchedulePatchState({
+          status: 429,
+          backoffCount,
+          now: Date.now(),
+          jitterMs: BATCH_JITTER
+        });
         backoffCount = schedule.backoffCount;
         nextFetchAt = schedule.nextFetchAt;
         console.log(`[linuxdo-auto] fetchMoreFromApi: 429限流，下次获取时间=${new Date(nextFetchAt).toLocaleTimeString()}，backoffCount=${backoffCount}`);
@@ -665,7 +701,12 @@
       }
       if (!res.ok) {
         status = res.status;
-        const schedule = computeNextFetchAt({ status: res.status, backoffCount });
+        const schedule = computeFetchSchedulePatchState({
+          status: res.status,
+          backoffCount,
+          now: Date.now(),
+          jitterMs: BATCH_JITTER
+        });
         backoffCount = schedule.backoffCount;
         nextFetchAt = schedule.nextFetchAt;
         console.log(`[linuxdo-auto] fetchMoreFromApi: HTTP错误 ${res.status}`);
@@ -678,6 +719,14 @@
       } catch (err) {
         console.log(`[linuxdo-auto] fetchMoreFromApi: JSON解析失败`);
         status = 0;
+        const schedule = computeFetchSchedulePatchState({
+          status,
+          backoffCount,
+          now: Date.now(),
+          jitterMs: BATCH_JITTER
+        });
+        backoffCount = schedule.backoffCount;
+        nextFetchAt = schedule.nextFetchAt;
         break;
       }
 
@@ -1045,8 +1094,9 @@
   async function resumeIfNeeded() {
     await stateLoaded;
     await ensureHistoryPruned();
-    if (currentState.fetching && !isOwnerSelf()) {
-      await setState({ fetching: false });
+    const stalePatch = computeStaleFlagPatchState(currentState, { ttlMs: OWNER_TTL_MS });
+    if (stalePatch && Object.keys(stalePatch).length > 0) {
+      await setState(stalePatch);
     }
 
     if (currentState.running) {
