@@ -19,6 +19,38 @@
     backoffMaxMs: 10 * 60 * 1000
   };
   const FILL_MAX_PAGES = LOGIC && LOGIC.FILL_DEFAULTS ? LOGIC.FILL_DEFAULTS.maxPages : 50;
+  const MONITOR_INTERVAL_MS = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.intervalMs
+    : 30000;
+  const MONITOR_MAX_PAGES = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.maxPages
+    : 2;
+  const REPLY_HISTORY_MAX = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.replyHistoryMax
+    : 3000;
+  const REPLY_HISTORY_TTL_MS = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.replyHistoryTtlMs
+    : 90 * 24 * 60 * 60 * 1000;
+  const MONITOR_KEYWORDS = LOGIC && LOGIC.KEYWORD_DEFAULTS
+    ? LOGIC.KEYWORD_DEFAULTS
+    : ["抽奖", "福利", "抽", "开奖", "抽取", "抽中", "赠送", "送福利", "随机", "中奖"];
+  const REPLY_TEMPLATES = LOGIC && LOGIC.REPLY_TEMPLATES
+    ? LOGIC.REPLY_TEMPLATES
+    : [
+      "参与抽奖，谢谢",
+      "支持活动，感谢",
+      "来参与一下",
+      "感谢福利分享",
+      "蹲一个好运",
+      "支持一下活动",
+      "来试试手气",
+      "参与支持一下",
+      "感谢大佬分享",
+      "路过参与一下",
+      "参与活动支持",
+      "感谢福利活动"
+    ];
+  const REPLY_SUFFIXES = ["！", "～", "呀", "哟", "哈哈", "支持", "感谢"];
   const BATCH_JITTER = Array.isArray(BATCH_DEFAULTS.jitterMs) ? BATCH_DEFAULTS.jitterMs : [2000, 5000];
   const HEARTBEAT_INTERVAL_MS = Math.max(2000, Math.floor(OWNER_TTL_MS / 2));
   const FETCH_TIMEOUT_MS = 8000;
@@ -54,6 +86,15 @@
     runId: 0,
     ownerId: null,
     ownerHeartbeat: 0,
+    monitorEnabled: true,
+    monitorOwnerId: null,
+    monitorOwnerHeartbeat: 0,
+    monitorLastCheckAt: 0,
+    monitorNextCheckAt: 0,
+    monitorBackoffCount: 0,
+    monitorReplyHistory: [],
+    monitorUserId: null,
+    monitorRunning: false,
     history: [],
     batchSize: BATCH_DEFAULTS.batchSize,
     lowWater: BATCH_DEFAULTS.lowWater,
@@ -67,6 +108,9 @@
 
   let currentState = { ...DEFAULT_STATE };
   let heartbeatTimer = null;
+  let monitorHeartbeatTimer = null;
+  let monitorTimer = null;
+  let monitorTicking = false;
   let stateLoadedResolve;
   const stateLoaded = new Promise((resolve) => {
     stateLoadedResolve = resolve;
@@ -177,6 +221,56 @@
     heartbeatTimer = null;
   }
 
+  function isMonitorOwnerActive(ownerId, heartbeat) {
+    return isOwnerActive(ownerId, heartbeat);
+  }
+
+  function isMonitorOwnerSelf() {
+    return currentState.monitorOwnerId === INSTANCE_ID;
+  }
+
+  async function claimMonitorOwnership() {
+    const active = isMonitorOwnerActive(currentState.monitorOwnerId, currentState.monitorOwnerHeartbeat);
+    if (active && !isMonitorOwnerSelf()) {
+      return false;
+    }
+    await setState({ monitorOwnerId: INSTANCE_ID, monitorOwnerHeartbeat: Date.now() });
+    return true;
+  }
+
+  function startMonitorHeartbeat() {
+    if (monitorHeartbeatTimer) {
+      return;
+    }
+    const tick = async () => {
+      if (!currentState.monitorEnabled || !isMonitorOwnerSelf()) {
+        stopMonitorHeartbeat();
+        return;
+      }
+      await setState({ monitorOwnerId: INSTANCE_ID, monitorOwnerHeartbeat: Date.now() });
+    };
+    monitorHeartbeatTimer = setInterval(tick, HEARTBEAT_INTERVAL_MS);
+    void tick();
+  }
+
+  function stopMonitorHeartbeat() {
+    if (!monitorHeartbeatTimer) {
+      return;
+    }
+    clearInterval(monitorHeartbeatTimer);
+    monitorHeartbeatTimer = null;
+  }
+
+  async function releaseMonitorOwnership(patch = {}) {
+    const nextPatch = { monitorRunning: false, ...patch };
+    if (isMonitorOwnerSelf()) {
+      nextPatch.monitorOwnerId = null;
+      nextPatch.monitorOwnerHeartbeat = 0;
+    }
+    stopMonitorHeartbeat();
+    await setState(nextPatch);
+  }
+
   function extractTopicId(url) {
     try {
       const resolved = new URL(url, location.origin);
@@ -232,6 +326,40 @@
     return filtered.slice(0, HISTORY_MAX);
   }
 
+  function getPrunedReplyHistory() {
+    const safe = Array.isArray(currentState.monitorReplyHistory) ? currentState.monitorReplyHistory : [];
+    const now = Date.now();
+    const filtered = safe.filter((entry) => {
+      return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
+    });
+    filtered.sort((a, b) => b.ts - a.ts);
+    return filtered.slice(0, REPLY_HISTORY_MAX);
+  }
+
+  function replyHistoryToSet(entries) {
+    const safe = Array.isArray(entries) ? entries : [];
+    const ids = safe.map((entry) => entry && entry.id).filter(Number.isFinite);
+    return new Set(ids);
+  }
+
+  function addReplyHistoryEntry(entries, id) {
+    const now = Date.now();
+    const safe = Array.isArray(entries) ? entries : [];
+    if (!Number.isFinite(id)) {
+      const filtered = safe.filter((entry) => {
+        return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
+      });
+      filtered.sort((a, b) => b.ts - a.ts);
+      return filtered.slice(0, REPLY_HISTORY_MAX);
+    }
+    const next = [{ id, ts: now }, ...safe.filter((entry) => entry && entry.id !== id)];
+    const filtered = next.filter((entry) => {
+      return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
+    });
+    filtered.sort((a, b) => b.ts - a.ts);
+    return filtered.slice(0, REPLY_HISTORY_MAX);
+  }
+
   function historiesEqual(a, b) {
     const left = Array.isArray(a) ? a : [];
     const right = Array.isArray(b) ? b : [];
@@ -250,6 +378,14 @@
     const pruned = getPrunedHistory();
     if (!historiesEqual(pruned, currentState.history)) {
       await setState({ history: pruned });
+    }
+    return pruned;
+  }
+
+  async function ensureReplyHistoryPruned() {
+    const pruned = getPrunedReplyHistory();
+    if (!historiesEqual(pruned, currentState.monitorReplyHistory)) {
+      await setState({ monitorReplyHistory: pruned });
     }
     return pruned;
   }
@@ -374,6 +510,16 @@
       </div>
       <div class="row"><span>状态</span><span class="status" id="linuxdo-status">空闲</span></div>
       <div class="row"><span>进度</span><span id="linuxdo-progress">0/${TARGET_DEFAULT}</span></div>
+      <div class="row">
+        <span>抽奖监控</span>
+        <div class="monitor-control">
+          <span class="monitor-status" id="linuxdo-monitor-status">开启</span>
+          <label class="switch">
+            <input id="linuxdo-monitor-toggle" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
       <div class="button-row">
         <button id="linuxdo-toggle">开始</button>
         <button id="linuxdo-restart" class="secondary">重新开始</button>
@@ -390,6 +536,8 @@
     const targetInput = panel.querySelector("#linuxdo-target");
     const takeoverBtn = panel.querySelector("#linuxdo-takeover");
     const takeoverRow = panel.querySelector("#linuxdo-takeover-row");
+    const monitorToggle = panel.querySelector("#linuxdo-monitor-toggle");
+    const monitorStatus = panel.querySelector("#linuxdo-monitor-status");
 
     takeoverBtn.addEventListener("click", async () => {
       await stateLoaded;
@@ -449,6 +597,27 @@
       }
       await setState(patch);
     };
+
+    if (monitorToggle) {
+      monitorToggle.addEventListener("change", async () => {
+        await stateLoaded;
+        const enabled = monitorToggle.checked;
+        if (!enabled) {
+          await releaseMonitorOwnership({
+            monitorEnabled: false,
+            monitorNextCheckAt: 0,
+            monitorBackoffCount: 0
+          });
+          return;
+        }
+        await setState({ monitorEnabled: true });
+        scheduleMonitor(0);
+      });
+    }
+
+    if (monitorStatus) {
+      monitorStatus.textContent = currentState.monitorEnabled ? "开启" : "关闭";
+    }
 
     targetInput.addEventListener("change", async (event) => {
       await commitTarget(event.target.value);
@@ -529,6 +698,8 @@
     const restartBtn = panel.querySelector("#linuxdo-restart");
     const targetInput = panel.querySelector("#linuxdo-target");
     const takeoverRow = panel.querySelector("#linuxdo-takeover-row");
+    const monitorToggle = panel.querySelector("#linuxdo-monitor-toggle");
+    const monitorStatusEl = panel.querySelector("#linuxdo-monitor-status");
 
     const target = LOGIC && LOGIC.sanitizeTargetCount
       ? LOGIC.sanitizeTargetCount(currentState.targetCount, LOGIC.DEFAULTS)
@@ -541,12 +712,19 @@
 
     const ownerActive = isOwnerActive(currentState.ownerId, currentState.ownerHeartbeat);
     const otherOwnerActive = ownerActive && !isOwnerSelf();
+    const monitorOwnerActive = isMonitorOwnerActive(currentState.monitorOwnerId, currentState.monitorOwnerHeartbeat);
+    const monitorOtherOwnerActive = monitorOwnerActive && !isMonitorOwnerSelf();
 
     const now = Date.now();
     const coolingDown = currentState.running
       && currentState.backoffCount > 0
       && Number.isFinite(currentState.nextFetchAt)
       && now < currentState.nextFetchAt;
+
+    const monitorCoolingDown = currentState.monitorEnabled
+      && currentState.monitorBackoffCount > 0
+      && Number.isFinite(currentState.monitorNextCheckAt)
+      && now < currentState.monitorNextCheckAt;
 
     let status = "空闲";
     if (otherOwnerActive) {
@@ -578,6 +756,23 @@
     if (takeoverRow) {
       takeoverRow.style.display = otherOwnerActive ? "flex" : "none";
     }
+
+    if (monitorStatusEl) {
+      let monitorStatus = currentState.monitorEnabled ? "开启" : "关闭";
+      if (monitorOtherOwnerActive) {
+        monitorStatus = "其他标签";
+      } else if (currentState.monitorRunning) {
+        monitorStatus = "监控中";
+      } else if (monitorCoolingDown) {
+        monitorStatus = "冷却中";
+      }
+      monitorStatusEl.textContent = monitorStatus;
+    }
+
+    if (monitorToggle) {
+      monitorToggle.checked = Boolean(currentState.monitorEnabled);
+      monitorToggle.disabled = monitorOtherOwnerActive;
+    }
   }
 
   let storageListenerAdded = false;
@@ -597,6 +792,13 @@
           currentState[key] = change.newValue;
         }
         updatePanel();
+        if (Object.prototype.hasOwnProperty.call(changes, "monitorEnabled")) {
+          if (changes.monitorEnabled.newValue) {
+            scheduleMonitor(0);
+          } else if (isMonitorOwnerSelf()) {
+            void releaseMonitorOwnership();
+          }
+        }
       });
     }
   }
@@ -620,6 +822,294 @@
       await sleep(500);
     }
     return false;
+  }
+
+  function matchMonitorKeyword(title) {
+    if (LOGIC && LOGIC.matchTitleKeywords) {
+      return LOGIC.matchTitleKeywords(title, MONITOR_KEYWORDS);
+    }
+    const text = String(title || "");
+    return MONITOR_KEYWORDS.some((key) => key && text.includes(key));
+  }
+
+  function buildReplyText() {
+    const base = LOGIC && LOGIC.pickReplyTemplate
+      ? LOGIC.pickReplyTemplate(REPLY_TEMPLATES)
+      : (Array.isArray(REPLY_TEMPLATES) ? REPLY_TEMPLATES[Math.floor(Math.random() * REPLY_TEMPLATES.length)] : "");
+    const suffix = REPLY_SUFFIXES[Math.floor(Math.random() * REPLY_SUFFIXES.length)] || "";
+    let text = `${base || ""}`.trim();
+    if (suffix && !text.endsWith(suffix)) {
+      text += suffix;
+    }
+    if (text.length < 4) {
+      text = `${text}参与`;
+    }
+    return text;
+  }
+
+  function getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute("content") : null;
+  }
+
+  async function getCurrentUserId() {
+    if (Number.isFinite(currentState.monitorUserId)) {
+      return currentState.monitorUserId;
+    }
+    let res;
+    try {
+      res = await fetchWithTimeout("/session/current.json", { credentials: "include" });
+    } catch (err) {
+      console.log(`[linuxdo-auto] monitor: 获取用户信息失败 ${err.message}`);
+      return null;
+    }
+    if (!res || !res.ok) {
+      console.log(`[linuxdo-auto] monitor: 获取用户信息失败 ${res ? res.status : "unknown"}`);
+      return null;
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch (err) {
+      console.log("[linuxdo-auto] monitor: 解析用户信息失败");
+      return null;
+    }
+    const id = data && data.current_user && Number.isFinite(data.current_user.id)
+      ? data.current_user.id
+      : data && data.user && Number.isFinite(data.user.id)
+        ? data.user.id
+        : null;
+    if (Number.isFinite(id)) {
+      await setState({ monitorUserId: id });
+      return id;
+    }
+    return null;
+  }
+
+  async function fetchTopicDetail(topicId) {
+    const url = `/t/${topicId}.json?track_visit=true&forceLoad=true`;
+    try {
+      const res = await fetchWithTimeout(url, { credentials: "include" });
+      if (!res.ok) {
+        return { status: res.status, data: null };
+      }
+      const data = await res.json();
+      return { status: res.status, data };
+    } catch (err) {
+      return { status: 0, data: null };
+    }
+  }
+
+  function hasUserReplied(detail, userId) {
+    if (!detail) return false;
+    const posts = detail.post_stream && Array.isArray(detail.post_stream.posts)
+      ? detail.post_stream.posts
+      : [];
+    if (posts.some((post) => post && post.yours)) {
+      return true;
+    }
+    if (Number.isFinite(userId)) {
+      return posts.some((post) => post && post.user_id === userId);
+    }
+    return false;
+  }
+
+  function isReplyAllowed(detail) {
+    if (!detail) return false;
+    if (detail.closed || detail.archived) return false;
+    if (detail.details && detail.details.can_create_post === false) return false;
+    return true;
+  }
+
+  async function postReply(topicId, raw) {
+    const token = getCsrfToken();
+    if (!token) {
+      console.log("[linuxdo-auto] monitor: 缺少CSRF token");
+      return { ok: false, status: 0 };
+    }
+    const body = new URLSearchParams();
+    body.set("topic_id", String(topicId));
+    body.set("raw", raw);
+    const res = await fetchWithTimeout("/posts.json", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-CSRF-Token": token,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body
+    });
+    return { ok: res.ok, status: res.status };
+  }
+
+  async function handleMonitorTopic(topic, repliedSet, userId) {
+    if (!topic || !Number.isFinite(topic.id) || !topic.title) return false;
+    if (!matchMonitorKeyword(topic.title)) return false;
+    if (repliedSet.has(topic.id)) return false;
+
+    const detail = await fetchTopicDetail(topic.id);
+    if (!detail || detail.status === 429) {
+      return { status: 429 };
+    }
+    if (!detail.data) {
+      return { status: detail.status || 0 };
+    }
+
+    if (hasUserReplied(detail.data, userId)) {
+      const next = addReplyHistoryEntry(getPrunedReplyHistory(), topic.id);
+      await setState({ monitorReplyHistory: next });
+      repliedSet.add(topic.id);
+      return true;
+    }
+
+    if (!isReplyAllowed(detail.data)) {
+      return false;
+    }
+
+    const replyText = buildReplyText();
+    if (!replyText) {
+      return false;
+    }
+    const posted = await postReply(topic.id, replyText);
+    if (posted.ok) {
+      const next = addReplyHistoryEntry(getPrunedReplyHistory(), topic.id);
+      await setState({ monitorReplyHistory: next });
+      repliedSet.add(topic.id);
+      return true;
+    }
+    return { status: posted.status };
+  }
+
+  function scheduleMonitor(delayMs) {
+    if (monitorTimer) {
+      clearTimeout(monitorTimer);
+    }
+    const delay = Math.max(0, delayMs);
+    monitorTimer = setTimeout(() => {
+      void monitorTick();
+    }, delay);
+  }
+
+  async function runMonitorCheck() {
+    await ensureReplyHistoryPruned();
+    const userId = await getCurrentUserId();
+    if (!Number.isFinite(userId)) {
+      return { status: 0 };
+    }
+
+    const repliedSet = replyHistoryToSet(getPrunedReplyHistory());
+    let nextUrl = API_LATEST_URL;
+    let pagesFetched = 0;
+    let status = 200;
+
+    while (nextUrl && pagesFetched < MONITOR_MAX_PAGES) {
+      let res;
+      try {
+        res = await fetchWithTimeout(nextUrl, { credentials: "include" });
+      } catch (err) {
+        status = 0;
+        break;
+      }
+      if (res.status === 429) {
+        status = 429;
+        break;
+      }
+      if (!res.ok) {
+        status = res.status;
+        break;
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch (err) {
+        status = 0;
+        break;
+      }
+
+      const topics = data && data.topic_list && Array.isArray(data.topic_list.topics)
+        ? data.topic_list.topics
+        : [];
+      for (const topic of topics) {
+        const result = await handleMonitorTopic(topic, repliedSet, userId);
+        if (result && result.status === 429) {
+          status = 429;
+          break;
+        }
+      }
+      if (status === 429) break;
+
+      const more = data && data.topic_list && data.topic_list.more_topics_url
+        ? data.topic_list.more_topics_url
+        : null;
+      nextUrl = more ? ensureJsonApiUrl(more) : null;
+      pagesFetched += 1;
+    }
+
+    return { status };
+  }
+
+  async function monitorTick() {
+    if (monitorTicking) return;
+    monitorTicking = true;
+    try {
+      await stateLoaded;
+      if (!currentState.monitorEnabled) {
+        await releaseMonitorOwnership();
+        return;
+      }
+
+      const ownerActive = isMonitorOwnerActive(currentState.monitorOwnerId, currentState.monitorOwnerHeartbeat);
+      if (ownerActive && !isMonitorOwnerSelf()) {
+        scheduleMonitor(MONITOR_INTERVAL_MS);
+        return;
+      }
+
+      if (!isMonitorOwnerSelf()) {
+        const claimed = await claimMonitorOwnership();
+        if (!claimed) {
+          scheduleMonitor(MONITOR_INTERVAL_MS);
+          return;
+        }
+      }
+
+      startMonitorHeartbeat();
+
+      const now = Date.now();
+      if (Number.isFinite(currentState.monitorNextCheckAt) && currentState.monitorNextCheckAt > now) {
+        scheduleMonitor(currentState.monitorNextCheckAt - now);
+        return;
+      }
+
+      await setState({ monitorRunning: true });
+      const result = await runMonitorCheck();
+      const status = result && Number.isFinite(result.status) ? result.status : 0;
+      let nextPatch = { monitorRunning: false, monitorLastCheckAt: Date.now() };
+      if (status === 429) {
+        const schedule = computeNextFetchAt({ status: 429, backoffCount: currentState.monitorBackoffCount });
+        nextPatch.monitorNextCheckAt = schedule.nextFetchAt;
+        nextPatch.monitorBackoffCount = schedule.backoffCount;
+      } else if (status !== 200) {
+        nextPatch.monitorNextCheckAt = Date.now() + MONITOR_INTERVAL_MS;
+        nextPatch.monitorBackoffCount = 0;
+      } else {
+        nextPatch.monitorNextCheckAt = 0;
+        nextPatch.monitorBackoffCount = 0;
+      }
+      await setState(nextPatch);
+    } finally {
+      monitorTicking = false;
+    }
+    scheduleMonitor(MONITOR_INTERVAL_MS);
+  }
+
+  async function resumeMonitorIfNeeded() {
+    await stateLoaded;
+    if (!currentState.monitorEnabled) {
+      return;
+    }
+    scheduleMonitor(0);
   }
 
   async function fillQueueFromApi(runId) {
@@ -1165,4 +1655,5 @@
   createPanel();
   loadState();
   resumeIfNeeded();
+  resumeMonitorIfNeeded();
 })();

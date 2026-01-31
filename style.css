@@ -27,6 +27,64 @@
   gap: 8px;
 }
 
+#linuxdo-auto-panel .monitor-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#linuxdo-auto-panel .monitor-status {
+  font-size: 11px;
+  color: #9be7ff;
+}
+
+#linuxdo-auto-panel .switch {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 18px;
+}
+
+#linuxdo-auto-panel .switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+#linuxdo-auto-panel .switch .slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #555;
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+#linuxdo-auto-panel .switch .slider::before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  top: 2px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+#linuxdo-auto-panel .switch input:checked + .slider {
+  background: #2f80ed;
+}
+
+#linuxdo-auto-panel .switch input:checked + .slider::before {
+  transform: translateX(16px);
+}
+
+#linuxdo-auto-panel .switch input:disabled + .slider {
+  background: #777;
+  cursor: not-allowed;
+}
+
 #linuxdo-auto-panel .status {
   font-weight: 600;
   color: #9be7ff;
