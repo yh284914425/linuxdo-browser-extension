@@ -155,6 +155,23 @@
     return { shouldContinue, nextPagesFetched: pages + 1 };
   }
 
+  function computeStaleFlagPatch(state, options = {}) {
+    const ownerActive = isOwnerActive(state.ownerId, state.ownerHeartbeat, options);
+    if (ownerActive) return {};
+    const next = {};
+    if (state.fetching) next.fetching = false;
+    if (state.queueBuilding) next.queueBuilding = false;
+    return next;
+  }
+
+  function computeFetchSchedulePatch({ status, backoffCount, now, jitterMs } = {}) {
+    const schedule = computeNextFetchAt({ status, backoffCount, now, jitterMs });
+    return {
+      nextFetchAt: schedule.nextFetchAt,
+      backoffCount: schedule.backoffCount
+    };
+  }
+
   return {
     DEFAULTS,
     OWNER_DEFAULTS,
@@ -171,6 +188,8 @@
     historyToSet,
     computeNextFetchAt,
     shouldFetchMore,
-    computeBatchPlan
+    computeBatchPlan,
+    computeStaleFlagPatch,
+    computeFetchSchedulePatch
   };
 });
