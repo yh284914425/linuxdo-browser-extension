@@ -31,6 +31,57 @@
     backoffMaxMs: 10 * 60 * 1000
   };
 
+  const KEYWORD_DEFAULTS = [
+    '抽奖',
+    '福利',
+    '抽',
+    '开奖',
+    '抽取',
+    '抽中',
+    '赠送',
+    '送福利',
+    '随机',
+    '中奖'
+  ];
+
+  const REPLY_TEMPLATES = [
+    '参与抽奖，谢谢',
+    '支持活动，感谢',
+    '来参与一下',
+    '感谢福利分享',
+    '蹲一个好运',
+    '支持一下活动',
+    '来试试手气',
+    '参与支持一下',
+    '感谢大佬分享',
+    '路过参与一下',
+    '参与活动支持',
+    '感谢福利活动'
+  ];
+
+  function normalizeKeywords(list) {
+    const safe = Array.isArray(list) ? list : [];
+    return safe
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0);
+  }
+
+  function matchTitleKeywords(title, list = KEYWORD_DEFAULTS) {
+    const text = String(title || '');
+    const keywords = normalizeKeywords(list);
+    return keywords.some((key) => key && text.includes(key));
+  }
+
+  function pickReplyTemplate(list = REPLY_TEMPLATES, options = {}) {
+    const safe = Array.isArray(list)
+      ? list.filter((item) => typeof item === 'string' && item.trim().length >= 4)
+      : [];
+    if (safe.length === 0) return '';
+    const random = typeof options.random === 'function' ? options.random : Math.random;
+    const idx = Math.min(Math.floor(random() * safe.length), safe.length - 1);
+    return safe[idx];
+  }
+
   function sanitizeTargetCount(value, defaults = DEFAULTS) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) {
@@ -185,6 +236,11 @@
     OWNER_DEFAULTS,
     HISTORY_DEFAULTS,
     BATCH_DEFAULTS,
+    KEYWORD_DEFAULTS,
+    REPLY_TEMPLATES,
+    normalizeKeywords,
+    matchTitleKeywords,
+    pickReplyTemplate,
     sanitizeTargetCount,
     ensureJsonApiUrl,
     shouldStopWhenQueueEmpty,

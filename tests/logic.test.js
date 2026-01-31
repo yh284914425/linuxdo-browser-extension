@@ -14,6 +14,8 @@ const {
   shouldFetchMore,
   computeBatchPlan,
   computeFillPlan,
+  matchTitleKeywords,
+  pickReplyTemplate,
   computeStaleFlagPatch,
   computeFetchSchedulePatch
 } = require('../logic');
@@ -137,6 +139,20 @@ function testFillPlan() {
   assert.strictEqual(plan5.shouldContinue, false);
 }
 
+function testKeywordHelpers() {
+  const keywords = ['抽奖', '福利', '抽'];
+  assert.strictEqual(matchTitleKeywords('今晚有抽奖', keywords), true);
+  assert.strictEqual(matchTitleKeywords('福利大放送', keywords), true);
+  assert.strictEqual(matchTitleKeywords('抽空看看', keywords), true);
+  assert.strictEqual(matchTitleKeywords('不相关标题', keywords), false);
+}
+
+function testPickReplyTemplate() {
+  const templates = ['参与一下', '支持活动', '感谢福利'];
+  const pick = pickReplyTemplate(templates, { random: () => 0.0 });
+  assert.strictEqual(pick, '参与一下');
+}
+
 function testEnsureJsonApiUrl() {
   const base = 'https://linux.do';
   assert.strictEqual(
@@ -191,6 +207,8 @@ testRunIdPatches();
 testOwnerActive();
 testHistoryHelpers();
 testBatchBackoffHelpers();
+testKeywordHelpers();
+testPickReplyTemplate();
 testFillPlan();
 testEnsureJsonApiUrl();
 testStaleFlagPatch();
