@@ -41,6 +41,25 @@
     return parsed;
   }
 
+  function ensureJsonApiUrl(url, options = {}) {
+    if (!url) return null;
+    const base = options.base || options.origin;
+    try {
+      const resolved = base ? new URL(url, base) : new URL(url);
+      let pathname = resolved.pathname || '';
+      if (pathname.endsWith('/')) {
+        pathname = pathname.slice(0, -1);
+      }
+      if (!pathname.endsWith('.json')) {
+        pathname = `${pathname}.json`;
+      }
+      resolved.pathname = pathname;
+      return resolved.href;
+    } catch (err) {
+      return url;
+    }
+  }
+
   function shouldStopWhenQueueEmpty(state) {
     return !state.queueBuilding;
   }
@@ -142,6 +161,7 @@
     HISTORY_DEFAULTS,
     BATCH_DEFAULTS,
     sanitizeTargetCount,
+    ensureJsonApiUrl,
     shouldStopWhenQueueEmpty,
     buildStartPatch,
     buildRestartPatch,

@@ -88,6 +88,27 @@
     return `${u.origin}${path}`;
   }
 
+  function ensureJsonApiUrl(url) {
+    if (LOGIC && LOGIC.ensureJsonApiUrl) {
+      return LOGIC.ensureJsonApiUrl(url, { base: location.origin });
+    }
+    if (!url) return null;
+    try {
+      const resolved = new URL(url, location.origin);
+      let pathname = resolved.pathname || "";
+      if (pathname.endsWith("/")) {
+        pathname = pathname.slice(0, -1);
+      }
+      if (!pathname.endsWith(".json")) {
+        pathname = `${pathname}.json`;
+      }
+      resolved.pathname = pathname;
+      return resolved.href;
+    } catch (err) {
+      return url;
+    }
+  }
+
   function clampTargetCount(value) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) {
@@ -594,7 +615,7 @@
     }
 
     const maxPages = Number.isFinite(currentState.maxPages) ? currentState.maxPages : BATCH_DEFAULTS.maxPages;
-    let nextUrl = currentState.nextApiUrl || API_LATEST_URL;
+    let nextUrl = ensureJsonApiUrl(currentState.nextApiUrl || API_LATEST_URL);
     if (!nextUrl) {
       console.log("[linuxdo-auto] fetchMoreFromApi: 没有下一页URL，跳过");
       return { added: 0 };
@@ -695,7 +716,7 @@
       const more = data && data.topic_list && data.topic_list.more_topics_url
         ? data.topic_list.more_topics_url
         : null;
-      nextUrl = more ? new URL(more, location.origin).href : null;
+      nextUrl = more ? ensureJsonApiUrl(more) : null;
       console.log(`[linuxdo-auto] fetchMoreFromApi: 下一页=${nextUrl || '无'}`);
 
       pagesFetched += 1;

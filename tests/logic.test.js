@@ -9,6 +9,7 @@ const {
   pruneHistory,
   addHistoryEntry,
   historyToSet,
+  ensureJsonApiUrl,
   computeNextFetchAt,
   shouldFetchMore,
   computeBatchPlan
@@ -81,10 +82,23 @@ function testBatchBackoffHelpers() {
   assert.strictEqual(plan.nextPagesFetched, 2);
 }
 
+function testEnsureJsonApiUrl() {
+  const base = 'https://linux.do';
+  assert.strictEqual(
+    ensureJsonApiUrl('/latest?no_definitions=true&page=1', { base }),
+    'https://linux.do/latest.json?no_definitions=true&page=1'
+  );
+  assert.strictEqual(
+    ensureJsonApiUrl('https://linux.do/latest.json?no_definitions=true&page=2', { base }),
+    'https://linux.do/latest.json?no_definitions=true&page=2'
+  );
+}
+
 testSanitizeTargetCount();
 testQueueEmptyStop();
 testRunIdPatches();
 testOwnerActive();
 testHistoryHelpers();
 testBatchBackoffHelpers();
+testEnsureJsonApiUrl();
 console.log('logic tests passed');
