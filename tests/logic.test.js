@@ -13,6 +13,7 @@ const {
   computeNextFetchAt,
   shouldFetchMore,
   computeBatchPlan,
+  computeFillPlan,
   computeStaleFlagPatch,
   computeFetchSchedulePatch
 } = require('../logic');
@@ -84,6 +85,58 @@ function testBatchBackoffHelpers() {
   assert.strictEqual(plan.nextPagesFetched, 2);
 }
 
+function testFillPlan() {
+  const plan1 = computeFillPlan({
+    queueLength: 20,
+    targetCount: 100,
+    pagesFetched: 3,
+    maxPages: 10,
+    nextUrl: 'https://linux.do/latest.json',
+    status: 200
+  });
+  assert.strictEqual(plan1.shouldContinue, true);
+
+  const plan2 = computeFillPlan({
+    queueLength: 100,
+    targetCount: 100,
+    pagesFetched: 1,
+    maxPages: 10,
+    nextUrl: 'https://linux.do/latest.json',
+    status: 200
+  });
+  assert.strictEqual(plan2.shouldContinue, false);
+
+  const plan3 = computeFillPlan({
+    queueLength: 20,
+    targetCount: 100,
+    pagesFetched: 10,
+    maxPages: 10,
+    nextUrl: 'https://linux.do/latest.json',
+    status: 200
+  });
+  assert.strictEqual(plan3.shouldContinue, false);
+
+  const plan4 = computeFillPlan({
+    queueLength: 20,
+    targetCount: 100,
+    pagesFetched: 1,
+    maxPages: 10,
+    nextUrl: null,
+    status: 200
+  });
+  assert.strictEqual(plan4.shouldContinue, false);
+
+  const plan5 = computeFillPlan({
+    queueLength: 20,
+    targetCount: 100,
+    pagesFetched: 1,
+    maxPages: 10,
+    nextUrl: 'https://linux.do/latest.json',
+    status: 429
+  });
+  assert.strictEqual(plan5.shouldContinue, false);
+}
+
 function testEnsureJsonApiUrl() {
   const base = 'https://linux.do';
   assert.strictEqual(
@@ -138,6 +191,7 @@ testRunIdPatches();
 testOwnerActive();
 testHistoryHelpers();
 testBatchBackoffHelpers();
+testFillPlan();
 testEnsureJsonApiUrl();
 testStaleFlagPatch();
 testFetchSchedulePatch();

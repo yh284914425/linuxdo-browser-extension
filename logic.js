@@ -155,6 +155,14 @@
     return { shouldContinue, nextPagesFetched: pages + 1 };
   }
 
+  function computeFillPlan({ queueLength, targetCount, pagesFetched, maxPages, nextUrl, status }) {
+    const hasCapacity = Number.isFinite(targetCount) ? queueLength < targetCount : true;
+    const underMax = Number.isFinite(maxPages) ? pagesFetched < maxPages : true;
+    const ok = status === 200;
+    const hasNext = Boolean(nextUrl);
+    return { shouldContinue: hasCapacity && underMax && ok && hasNext };
+  }
+
   function computeStaleFlagPatch(state, options = {}) {
     const ownerActive = isOwnerActive(state.ownerId, state.ownerHeartbeat, options);
     if (ownerActive) return {};
@@ -189,6 +197,7 @@
     computeNextFetchAt,
     shouldFetchMore,
     computeBatchPlan,
+    computeFillPlan,
     computeStaleFlagPatch,
     computeFetchSchedulePatch
   };
