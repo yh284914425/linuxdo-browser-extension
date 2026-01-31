@@ -12,7 +12,9 @@ const {
   ensureJsonApiUrl,
   computeNextFetchAt,
   shouldFetchMore,
-  computeBatchPlan
+  computeBatchPlan,
+  computeStaleFlagPatch,
+  computeFetchSchedulePatch
 } = require('../logic');
 
 function testSanitizeTargetCount() {
@@ -94,6 +96,42 @@ function testEnsureJsonApiUrl() {
   );
 }
 
+function testStaleFlagPatch() {
+  const now = 10_000;
+  const active = computeStaleFlagPatch(
+    { ownerId: 'a', ownerHeartbeat: now - 1000, fetching: true, queueBuilding: true },
+    { now, ttlMs: 5000 }
+  );
+  assert.deepStrictEqual(active, {});
+
+  const stale = computeStaleFlagPatch(
+    { ownerId: 'a', ownerHeartbeat: now - 6000, fetching: true, queueBuilding: true },
+    { now, ttlMs: 5000 }
+  );
+  assert.deepStrictEqual(stale, { fetching: false, queueBuilding: false });
+
+  const staleNoFlags = computeStaleFlagPatch(
+    { ownerId: 'a', ownerHeartbeat: now - 6000, fetching: false, queueBuilding: false },
+    { now, ttlMs: 5000 }
+  );
+  assert.deepStrictEqual(staleNoFlags, {});
+}
+
+function testFetchSchedulePatch() {
+  const now = 20_000;
+  const rateLimit = computeFetchSchedulePatch({ status: 429, backoffCount: 0, now });
+  assert.strictEqual(rateLimit.backoffCount, 1);
+  assert.strictEqual(rateLimit.nextFetchAt, now + 30000);
+
+  const serverErr = computeFetchSchedulePatch({ status: 500, backoffCount: 2, now, jitterMs: [2000, 5000] });
+  assert.strictEqual(serverErr.backoffCount, 0);
+  assert.strictEqual(serverErr.nextFetchAt >= now + 2000 && serverErr.nextFetchAt <= now + 5000, true);
+
+  const networkErr = computeFetchSchedulePatch({ status: 0, backoffCount: 1, now, jitterMs: [2000, 5000] });
+  assert.strictEqual(networkErr.backoffCount, 0);
+  assert.strictEqual(networkErr.nextFetchAt >= now + 2000 && networkErr.nextFetchAt <= now + 5000, true);
+}
+
 testSanitizeTargetCount();
 testQueueEmptyStop();
 testRunIdPatches();
@@ -101,4 +139,6 @@ testOwnerActive();
 testHistoryHelpers();
 testBatchBackoffHelpers();
 testEnsureJsonApiUrl();
+testStaleFlagPatch();
+testFetchSchedulePatch();
 console.log('logic tests passed');
