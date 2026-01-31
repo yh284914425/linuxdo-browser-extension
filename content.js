@@ -18,6 +18,7 @@
     backoffBaseMs: 30000,
     backoffMaxMs: 10 * 60 * 1000
   };
+  const FILL_MAX_PAGES = LOGIC && LOGIC.FILL_DEFAULTS ? LOGIC.FILL_DEFAULTS.maxPages : 50;
   const BATCH_JITTER = Array.isArray(BATCH_DEFAULTS.jitterMs) ? BATCH_DEFAULTS.jitterMs : [2000, 5000];
   const HEARTBEAT_INTERVAL_MS = Math.max(2000, Math.floor(OWNER_TTL_MS / 2));
   const FETCH_TIMEOUT_MS = 8000;
@@ -341,6 +342,17 @@
     return { shouldContinue, nextPagesFetched: pages + 1 };
   }
 
+  function computeFillPlanState({ queueLength, targetCount, pagesFetched, maxPages, nextUrl, status }) {
+    if (LOGIC && LOGIC.computeFillPlan) {
+      return LOGIC.computeFillPlan({ queueLength, targetCount, pagesFetched, maxPages, nextUrl, status });
+    }
+    const hasCapacity = Number.isFinite(targetCount) ? queueLength < targetCount : true;
+    const underMax = Number.isFinite(maxPages) ? pagesFetched < maxPages : true;
+    const ok = status === 200;
+    const hasNext = Boolean(nextUrl);
+    return { shouldContinue: hasCapacity && underMax && ok && hasNext };
+  }
+
   function getRemainingCount() {
     const total = currentState.queue ? currentState.queue.length : 0;
     const idx = currentState.index || 0;
@@ -610,6 +622,39 @@
     return false;
   }
 
+  async function fillQueueFromApi(runId) {
+    const isActive = () => currentState.running && currentState.runId === runId && isOwnerSelf();
+    let pagesFetched = 0;
+    let status = 200;
+
+    while (isActive()) {
+      const targetCount = getTargetCount();
+      const queueLength = currentState.queue ? currentState.queue.length : 0;
+      const nextUrl = currentState.nextApiUrl ? ensureJsonApiUrl(currentState.nextApiUrl) : null;
+      const plan = computeFillPlanState({
+        queueLength,
+        targetCount,
+        pagesFetched,
+        maxPages: FILL_MAX_PAGES,
+        nextUrl,
+        status
+      });
+      if (!plan.shouldContinue) {
+        break;
+      }
+
+      const result = await fetchMoreFromApi(runId);
+      if (!result) {
+        break;
+      }
+      pagesFetched += Number.isFinite(result.pagesFetched) ? result.pagesFetched : 0;
+      status = Number.isFinite(result.status) ? result.status : status;
+      if (status !== 200) {
+        break;
+      }
+    }
+  }
+
   async function fetchMoreFromApi(runId) {
     const isActive = () => currentState.running && currentState.runId === runId && isOwnerSelf();
     if (!isActive()) {
@@ -800,7 +845,7 @@
       await setState({ fetching: false });
     }
 
-    return { added: fetchedCount, status };
+    return { added: fetchedCount, status, pagesFetched };
   }
 
   async function maybeFetchMore(runId, { force = false } = {}) {
@@ -945,7 +990,7 @@
 
       if (currentState.queueBuilding) {
         console.log("[linuxdo-auto] runLoop: queueBuilding=true，尝试获取更多");
-        await maybeFetchMore(runId, { force: true });
+        await fillQueueFromApi(runId);
         if (!isActive()) return;
         if (!currentState.queue || currentState.queue.length === 0) {
           console.log("[linuxdo-auto] runLoop: 队列为空，从DOM构建");
@@ -970,7 +1015,7 @@
 
       if (!currentState.queue || currentState.queue.length === 0) {
         console.log("[linuxdo-auto] runLoop: 队列为空，尝试获取");
-        await maybeFetchMore(runId, { force: true });
+        await fillQueueFromApi(runId);
         if (!isActive()) return;
         if (!currentState.queue || currentState.queue.length === 0) {
           console.log("[linuxdo-auto] runLoop: 仍为空，从DOM构建");
