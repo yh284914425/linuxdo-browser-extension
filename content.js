@@ -44,6 +44,9 @@
   const MONITOR_KEYWORDS = LOGIC && LOGIC.KEYWORD_DEFAULTS
     ? LOGIC.KEYWORD_DEFAULTS
     : ["抽奖", "福利", "抽", "开奖", "抽取", "抽中", "赠送", "送福利", "随机", "中奖"];
+  const MONITOR_TAGS = LOGIC && LOGIC.TAG_DEFAULTS
+    ? LOGIC.TAG_DEFAULTS
+    : ["抽奖"];
   const REPLY_TEMPLATES = LOGIC && LOGIC.REPLY_TEMPLATES
     ? LOGIC.REPLY_TEMPLATES
     : [
@@ -1046,12 +1049,23 @@
     return false;
   }
 
-  function matchMonitorKeyword(title) {
-    if (LOGIC && LOGIC.matchTitleKeywords) {
-      return LOGIC.matchTitleKeywords(title, MONITOR_KEYWORDS);
+  function matchMonitorKeyword(tags) {
+    if (LOGIC && LOGIC.matchTopicTags) {
+      return LOGIC.matchTopicTags(tags, MONITOR_TAGS);
     }
-    const text = String(title || "");
-    return MONITOR_KEYWORDS.some((key) => key && text.includes(key));
+    const safeTags = Array.isArray(tags) ? tags : [];
+    const required = Array.isArray(MONITOR_TAGS) ? MONITOR_TAGS : [];
+    if (required.length === 0) return false;
+    const normalizedTags = safeTags
+      .map((item) => String(item || "").trim())
+      .filter((item) => item.length > 0)
+      .map((item) => item.toLowerCase());
+    const normalizedRequired = required
+      .map((item) => String(item || "").trim())
+      .filter((item) => item.length > 0)
+      .map((item) => item.toLowerCase());
+    if (normalizedRequired.length === 0) return false;
+    return normalizedRequired.some((tag) => normalizedTags.includes(tag));
   }
 
   function buildReplyText() {
@@ -1287,7 +1301,7 @@
 
   async function handleMonitorTopic(topic, repliedSet, userId) {
     if (!topic || !Number.isFinite(topic.id) || !topic.title) return false;
-    if (!matchMonitorKeyword(topic.title)) return false;
+    if (!matchMonitorKeyword(topic.tags)) return false;
     if (repliedSet.has(topic.id)) return false;
 
     const detail = await fetchTopicDetail(topic.id);

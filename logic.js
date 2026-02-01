@@ -57,6 +57,8 @@
     '中奖'
   ];
 
+  const TAG_DEFAULTS = ['抽奖'];
+
   const REPLY_TEMPLATES = [
     '参与抽奖，谢谢',
     '支持活动，感谢',
@@ -83,6 +85,22 @@
     const text = String(title || '');
     const keywords = normalizeKeywords(list);
     return keywords.some((key) => key && text.includes(key));
+  }
+
+  function matchTopicTags(tags, requiredTags = TAG_DEFAULTS) {
+    const safeTags = Array.isArray(tags) ? tags : [];
+    const required = Array.isArray(requiredTags) ? requiredTags : [];
+    if (required.length === 0) return false;
+    const normalizedTags = safeTags
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0)
+      .map((item) => item.toLowerCase());
+    const normalizedRequired = required
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0)
+      .map((item) => item.toLowerCase());
+    if (normalizedRequired.length === 0) return false;
+    return normalizedRequired.some((tag) => normalizedTags.includes(tag));
   }
 
   function pickReplyTemplate(list = REPLY_TEMPLATES, options = {}) {
@@ -264,9 +282,11 @@
     BATCH_DEFAULTS,
     MONITOR_DEFAULTS,
     KEYWORD_DEFAULTS,
+    TAG_DEFAULTS,
     REPLY_TEMPLATES,
     normalizeKeywords,
     matchTitleKeywords,
+    matchTopicTags,
     pickReplyTemplate,
     sanitizeTargetCount,
     ensureJsonApiUrl,

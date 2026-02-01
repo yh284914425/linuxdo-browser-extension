@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   DEFAULTS,
+  TAG_DEFAULTS,
   MONITOR_DEFAULTS,
   sanitizeTargetCount,
   shouldStopWhenQueueEmpty,
@@ -19,6 +20,7 @@ const {
   pickReplyTemplate,
   computeStaleFlagPatch,
   computeFetchSchedulePatch,
+  matchTopicTags,
   computeNotifyThrottle
 } = require('../logic');
 
@@ -149,6 +151,14 @@ function testKeywordHelpers() {
   assert.strictEqual(matchTitleKeywords('不相关标题', keywords), false);
 }
 
+function testTagHelpers() {
+  const tags = ['抽奖', '福利'];
+  assert.strictEqual(matchTopicTags(tags, ['抽奖']), true);
+  assert.strictEqual(matchTopicTags(tags, ['不存在']), false);
+  assert.strictEqual(matchTopicTags([], ['抽奖']), false);
+  assert.strictEqual(Array.isArray(TAG_DEFAULTS), true);
+}
+
 function testPickReplyTemplate() {
   const templates = ['参与一下', '支持活动', '感谢福利'];
   const pick = pickReplyTemplate(templates, { random: () => 0.0 });
@@ -246,6 +256,7 @@ testOwnerActive();
 testHistoryHelpers();
 testBatchBackoffHelpers();
 testKeywordHelpers();
+testTagHelpers();
 testPickReplyTemplate();
 testFillPlan();
 testEnsureJsonApiUrl();
