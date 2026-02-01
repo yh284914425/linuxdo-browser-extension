@@ -25,12 +25,22 @@
   const MONITOR_MAX_PAGES = LOGIC && LOGIC.MONITOR_DEFAULTS
     ? LOGIC.MONITOR_DEFAULTS.maxPages
     : 2;
+  const REPLY_SYNC_INTERVAL_MS = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.replySyncIntervalMs
+    : 10 * 60 * 1000;
+  const REPLY_SYNC_MAX_PAGES = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.replySyncMaxPages
+    : 2;
+  const REPLY_ITEMS_MAX = LOGIC && LOGIC.MONITOR_DEFAULTS
+    ? LOGIC.MONITOR_DEFAULTS.replyItemsMax
+    : 30;
   const REPLY_HISTORY_MAX = LOGIC && LOGIC.MONITOR_DEFAULTS
     ? LOGIC.MONITOR_DEFAULTS.replyHistoryMax
     : 3000;
   const REPLY_HISTORY_TTL_MS = LOGIC && LOGIC.MONITOR_DEFAULTS
     ? LOGIC.MONITOR_DEFAULTS.replyHistoryTtlMs
     : 90 * 24 * 60 * 60 * 1000;
+  const USER_ACTIONS_PAGE_SIZE = 30;
   const MONITOR_KEYWORDS = LOGIC && LOGIC.KEYWORD_DEFAULTS
     ? LOGIC.KEYWORD_DEFAULTS
     : ["抽奖", "福利", "抽", "开奖", "抽取", "抽中", "赠送", "送福利", "随机", "中奖"];
@@ -86,13 +96,18 @@
     runId: 0,
     ownerId: null,
     ownerHeartbeat: 0,
-    monitorEnabled: true,
+    monitorEnabled: LOGIC && LOGIC.MONITOR_DEFAULTS
+      ? Boolean(LOGIC.MONITOR_DEFAULTS.enabledByDefault)
+      : false,
     monitorOwnerId: null,
     monitorOwnerHeartbeat: 0,
     monitorLastCheckAt: 0,
     monitorNextCheckAt: 0,
     monitorBackoffCount: 0,
     monitorReplyHistory: [],
+    monitorReplyItems: [],
+    monitorReplySyncAt: 0,
+    monitorUsername: null,
     monitorUserId: null,
     monitorRunning: false,
     history: [],
@@ -111,6 +126,7 @@
   let monitorHeartbeatTimer = null;
   let monitorTimer = null;
   let monitorTicking = false;
+  let replyItemsInitRequested = false;
   let stateLoadedResolve;
   const stateLoaded = new Promise((resolve) => {
     stateLoadedResolve = resolve;
@@ -342,8 +358,9 @@
     return new Set(ids);
   }
 
-  function addReplyHistoryEntry(entries, id) {
+  function addReplyHistoryEntry(entries, id, options = {}) {
     const now = Date.now();
+    const requestedTs = Number.isFinite(options.ts) ? options.ts : null;
     const safe = Array.isArray(entries) ? entries : [];
     if (!Number.isFinite(id)) {
       const filtered = safe.filter((entry) => {
@@ -352,12 +369,64 @@
       filtered.sort((a, b) => b.ts - a.ts);
       return filtered.slice(0, REPLY_HISTORY_MAX);
     }
-    const next = [{ id, ts: now }, ...safe.filter((entry) => entry && entry.id !== id)];
+    const existing = safe.find((entry) => entry && entry.id === id && Number.isFinite(entry.ts));
+    const hasRequestedTs = requestedTs !== null;
+    const entryTs = existing && Number.isFinite(existing.ts) && hasRequestedTs && existing.ts > requestedTs
+      ? existing.ts
+      : (hasRequestedTs ? requestedTs : now);
+    const next = [{ id, ts: entryTs }, ...safe.filter((entry) => entry && entry.id !== id)];
     const filtered = next.filter((entry) => {
       return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
     });
     filtered.sort((a, b) => b.ts - a.ts);
     return filtered.slice(0, REPLY_HISTORY_MAX);
+  }
+
+  function getPrunedReplyItems(entries = currentState.monitorReplyItems) {
+    const safe = Array.isArray(entries) ? entries : [];
+    const now = Date.now();
+    const filtered = safe.filter((entry) => {
+      return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
+    });
+    filtered.sort((a, b) => b.ts - a.ts);
+    return filtered.slice(0, REPLY_ITEMS_MAX);
+  }
+
+  function addReplyItemEntry(entries, item = {}) {
+    const now = Date.now();
+    const safe = Array.isArray(entries) ? entries : [];
+    const id = Number.isFinite(item.id) ? item.id : null;
+    if (!Number.isFinite(id)) {
+      return getPrunedReplyItems(safe);
+    }
+    const ts = Number.isFinite(item.ts) ? item.ts : now;
+    const next = [{
+      id,
+      title: typeof item.title === "string" ? item.title.trim() : "",
+      url: typeof item.url === "string" ? item.url.trim() : "",
+      postNumber: Number.isFinite(item.postNumber) ? item.postNumber : null,
+      ts
+    }, ...safe.filter((entry) => entry && entry.id !== id)];
+    const filtered = next.filter((entry) => {
+      return entry && Number.isFinite(entry.id) && Number.isFinite(entry.ts) && now - entry.ts <= REPLY_HISTORY_TTL_MS;
+    });
+    filtered.sort((a, b) => b.ts - a.ts);
+    return filtered.slice(0, REPLY_ITEMS_MAX);
+  }
+
+  function replyItemsEqual(a, b) {
+    const left = Array.isArray(a) ? a : [];
+    const right = Array.isArray(b) ? b : [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i += 1) {
+      const l = left[i];
+      const r = right[i];
+      if (!l || !r) return false;
+      if (l.id !== r.id || l.ts !== r.ts || l.title !== r.title || l.url !== r.url || l.postNumber !== r.postNumber) {
+        return false;
+      }
+    }
+    return true;
   }
 
   function historiesEqual(a, b) {
@@ -374,6 +443,99 @@
     return true;
   }
 
+  function buildReplyItemFromTopic(topic, options = {}) {
+    if (!topic || !Number.isFinite(topic.id)) return null;
+    const slug = typeof topic.slug === "string" ? topic.slug.trim() : null;
+    const url = slug ? `/t/${slug}/${topic.id}` : `/t/${topic.id}`;
+    const ts = Number.isFinite(options.ts) ? options.ts : Date.now();
+    return {
+      id: topic.id,
+      title: typeof topic.title === "string" ? topic.title : "",
+      url,
+      postNumber: Number.isFinite(options.postNumber) ? options.postNumber : null,
+      ts
+    };
+  }
+
+  function buildReplyItemFromAction(action) {
+    if (!action || !Number.isFinite(action.topic_id)) return null;
+    const slug = typeof action.slug === "string" ? action.slug.trim() : null;
+    const postNumber = Number.isFinite(action.post_number) ? action.post_number : null;
+    const url = slug
+      ? `/t/${slug}/${action.topic_id}/${postNumber || 1}`
+      : `/t/${action.topic_id}/${postNumber || 1}`;
+    const parsed = action.created_at ? Date.parse(action.created_at) : NaN;
+    const ts = Number.isFinite(parsed) ? parsed : Date.now();
+    return {
+      id: action.topic_id,
+      title: typeof action.title === "string" ? action.title : "",
+      url,
+      postNumber,
+      ts
+    };
+  }
+
+  function formatReplyItemTime(ts) {
+    if (!Number.isFinite(ts)) return "";
+    const date = new Date(ts);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (value) => String(value).padStart(2, "0");
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hour = pad(date.getHours());
+    const minute = pad(date.getMinutes());
+    return `${month}-${day} ${hour}:${minute}`;
+  }
+
+  function notifyAutoReply(topic, timeLabel) {
+    if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    if (!topic || !Number.isFinite(topic.id)) return;
+    try {
+      const item = buildReplyItemFromTopic(topic);
+      chrome.runtime.sendMessage({
+        type: "linuxdo:notify-reply",
+        topicId: topic.id,
+        topicTitle: topic.title || "",
+        url: item && item.url ? item.url : "",
+        timeLabel: timeLabel || ""
+      });
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  function renderReplyItems(listEl, items) {
+    if (!listEl) return;
+    listEl.textContent = "";
+    if (!Array.isArray(items) || items.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "reply-item empty";
+      empty.textContent = "暂无记录";
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      if (!item || !Number.isFinite(item.id)) continue;
+      const li = document.createElement("li");
+      li.className = "reply-item";
+      const link = document.createElement("a");
+      link.href = item.url || `/t/${item.id}`;
+      link.textContent = item.title || `话题 ${item.id}`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      const meta = document.createElement("span");
+      meta.className = "reply-item-meta";
+      const time = formatReplyItemTime(item.ts);
+      const post = Number.isFinite(item.postNumber) ? `#${item.postNumber}` : "";
+      meta.textContent = [time, post].filter(Boolean).join(" ");
+      li.appendChild(link);
+      if (meta.textContent) {
+        li.appendChild(meta);
+      }
+      listEl.appendChild(li);
+    }
+  }
+
   async function ensureHistoryPruned() {
     const pruned = getPrunedHistory();
     if (!historiesEqual(pruned, currentState.history)) {
@@ -386,6 +548,14 @@
     const pruned = getPrunedReplyHistory();
     if (!historiesEqual(pruned, currentState.monitorReplyHistory)) {
       await setState({ monitorReplyHistory: pruned });
+    }
+    return pruned;
+  }
+
+  async function ensureReplyItemsPruned() {
+    const pruned = getPrunedReplyItems();
+    if (!replyItemsEqual(pruned, currentState.monitorReplyItems)) {
+      await setState({ monitorReplyItems: pruned });
     }
     return pruned;
   }
@@ -520,6 +690,10 @@
           </label>
         </div>
       </div>
+      <details class="reply-history" id="linuxdo-reply-history">
+        <summary id="linuxdo-reply-summary">已回复话题</summary>
+        <ul id="linuxdo-reply-list"></ul>
+      </details>
       <div class="button-row">
         <button id="linuxdo-toggle">开始</button>
         <button id="linuxdo-restart" class="secondary">重新开始</button>
@@ -700,6 +874,8 @@
     const takeoverRow = panel.querySelector("#linuxdo-takeover-row");
     const monitorToggle = panel.querySelector("#linuxdo-monitor-toggle");
     const monitorStatusEl = panel.querySelector("#linuxdo-monitor-status");
+    const replySummaryEl = panel.querySelector("#linuxdo-reply-summary");
+    const replyListEl = panel.querySelector("#linuxdo-reply-list");
 
     const target = LOGIC && LOGIC.sanitizeTargetCount
       ? LOGIC.sanitizeTargetCount(currentState.targetCount, LOGIC.DEFAULTS)
@@ -773,6 +949,14 @@
       monitorToggle.checked = Boolean(currentState.monitorEnabled);
       monitorToggle.disabled = monitorOtherOwnerActive;
     }
+
+    if (replySummaryEl || replyListEl) {
+      const items = getPrunedReplyItems();
+      if (replySummaryEl) {
+        replySummaryEl.textContent = `已回复话题（最近${items.length}/${REPLY_ITEMS_MAX}）`;
+      }
+      renderReplyItems(replyListEl, items);
+    }
   }
 
   let storageListenerAdded = false;
@@ -782,6 +966,7 @@
       currentState = { ...DEFAULT_STATE, ...state };
       updatePanel();
       stateLoadedResolve();
+      void initReplyItemsOnce();
     });
 
     if (!storageListenerAdded) {
@@ -806,11 +991,48 @@
   function setState(patch) {
     return new Promise((resolve) => {
       currentState = { ...currentState, ...patch };
-      chrome.storage.local.set(patch, () => {
-        updatePanel();
+      if (!chrome || !chrome.storage || !chrome.storage.local || !chrome.runtime || !chrome.runtime.id) {
         resolve();
-      });
+        return;
+      }
+      try {
+        chrome.storage.local.set(patch, () => {
+          updatePanel();
+          resolve();
+        });
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err || "");
+        if (message.includes("Extension context invalidated")) {
+          resolve();
+          return;
+        }
+        console.error("[linuxdo-auto] setState failed", err);
+        resolve();
+      }
     });
+  }
+
+  async function initReplyItemsOnce() {
+    if (replyItemsInitRequested) {
+      return;
+    }
+    replyItemsInitRequested = true;
+    const items = getPrunedReplyItems();
+    if (items.length > 0) {
+      return;
+    }
+    const userInfo = await getCurrentUserInfo();
+    if (!userInfo || !userInfo.username) {
+      return;
+    }
+    const result = await syncReplyHistoryFromUserActions(userInfo.username);
+    if (result && result.status === 429) {
+      const schedule = computeNextFetchAt({ status: 429, backoffCount: currentState.monitorBackoffCount });
+      await setState({
+        monitorNextCheckAt: schedule.nextFetchAt,
+        monitorBackoffCount: schedule.backoffCount
+      });
+    }
   }
 
   async function waitForTopics(timeoutMs) {
@@ -847,43 +1069,163 @@
     return text;
   }
 
+  function readUsernameFromAvatar() {
+    const headerAvatar = document.querySelector("header img.avatar");
+    const avatar = headerAvatar || document.querySelector("img.avatar");
+    const src = avatar ? avatar.getAttribute("src") : null;
+    if (!src) return null;
+    const match = src.match(/\/user_avatar\/[^/]+\/([^/]+)\//);
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (err) {
+      return match[1];
+    }
+  }
+
   function getCsrfToken() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute("content") : null;
   }
 
-  async function getCurrentUserId() {
-    if (Number.isFinite(currentState.monitorUserId)) {
-      return currentState.monitorUserId;
+  async function getCurrentUserInfo() {
+    if (Number.isFinite(currentState.monitorUserId) && typeof currentState.monitorUsername === "string" && currentState.monitorUsername.trim()) {
+      return { id: currentState.monitorUserId, username: currentState.monitorUsername };
+    }
+    const domUsername = readUsernameFromAvatar();
+    if (domUsername) {
+      await setState({ monitorUsername: domUsername });
+      return { id: Number.isFinite(currentState.monitorUserId) ? currentState.monitorUserId : null, username: domUsername };
     }
     let res;
     try {
       res = await fetchWithTimeout("/session/current.json", { credentials: "include" });
     } catch (err) {
       console.log(`[linuxdo-auto] monitor: 获取用户信息失败 ${err.message}`);
-      return null;
+      return { id: null, username: null };
     }
     if (!res || !res.ok) {
       console.log(`[linuxdo-auto] monitor: 获取用户信息失败 ${res ? res.status : "unknown"}`);
-      return null;
+      return { id: null, username: null };
     }
     let data;
     try {
       data = await res.json();
     } catch (err) {
       console.log("[linuxdo-auto] monitor: 解析用户信息失败");
-      return null;
+      return { id: null, username: null };
     }
     const id = data && data.current_user && Number.isFinite(data.current_user.id)
       ? data.current_user.id
       : data && data.user && Number.isFinite(data.user.id)
         ? data.user.id
         : null;
+    const username = data && data.current_user && typeof data.current_user.username === "string"
+      ? data.current_user.username.trim()
+      : data && data.user && typeof data.user.username === "string"
+        ? data.user.username.trim()
+        : null;
+    const patch = {};
     if (Number.isFinite(id)) {
-      await setState({ monitorUserId: id });
-      return id;
+      patch.monitorUserId = id;
     }
-    return null;
+    if (username) {
+      patch.monitorUsername = username;
+    }
+    if (Object.keys(patch).length > 0) {
+      await setState(patch);
+    }
+    if (Number.isFinite(id) || username) {
+      return { id: Number.isFinite(id) ? id : null, username: username || null };
+    }
+    return { id: null, username: null };
+  }
+
+  function shouldSyncReplyHistory(now = Date.now()) {
+    if (!Number.isFinite(REPLY_SYNC_INTERVAL_MS) || REPLY_SYNC_INTERVAL_MS <= 0) {
+      return false;
+    }
+    const lastSync = Number.isFinite(currentState.monitorReplySyncAt) ? currentState.monitorReplySyncAt : 0;
+    return now - lastSync >= REPLY_SYNC_INTERVAL_MS;
+  }
+
+  async function syncReplyHistoryFromUserActions(username) {
+    if (!username) {
+      return { status: 0 };
+    }
+    let offset = 0;
+    let pagesFetched = 0;
+    let status = 200;
+    let merged = getPrunedReplyHistory();
+    let mergedItems = getPrunedReplyItems();
+
+    while (pagesFetched < REPLY_SYNC_MAX_PAGES) {
+      let res;
+      try {
+        const url = `/user_actions.json?username=${encodeURIComponent(username)}&filter=5&offset=${offset}`;
+        res = await fetchWithTimeout(url, { credentials: "include" });
+      } catch (err) {
+        status = 0;
+        break;
+      }
+      if (res.status === 429) {
+        status = 429;
+        break;
+      }
+      if (!res.ok) {
+        status = res.status;
+        break;
+      }
+      let data;
+      try {
+        data = await res.json();
+      } catch (err) {
+        status = 0;
+        break;
+      }
+      const actions = data && Array.isArray(data.user_actions) ? data.user_actions : [];
+      if (actions.length === 0) {
+        break;
+      }
+      for (const action of actions) {
+        const item = buildReplyItemFromAction(action);
+        if (!item) {
+          continue;
+        }
+        merged = addReplyHistoryEntry(merged, item.id, { ts: item.ts });
+        mergedItems = addReplyItemEntry(mergedItems, item);
+      }
+      pagesFetched += 1;
+      offset += actions.length;
+      if (actions.length < USER_ACTIONS_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    if (status === 200) {
+      const patch = { monitorReplySyncAt: Date.now() };
+      if (!historiesEqual(merged, currentState.monitorReplyHistory)) {
+        patch.monitorReplyHistory = merged;
+      }
+      if (!replyItemsEqual(mergedItems, currentState.monitorReplyItems)) {
+        patch.monitorReplyItems = mergedItems;
+      }
+      await setState(patch);
+    } else if (status !== 429) {
+      console.log(`[linuxdo-auto] monitor: 同步回复历史失败 ${status}`);
+    }
+
+    return { status };
+  }
+
+  async function syncReplyHistoryIfNeeded(username) {
+    if (!username) {
+      return { status: 0 };
+    }
+    if (!shouldSyncReplyHistory()) {
+      return { status: 200 };
+    }
+    return await syncReplyHistoryFromUserActions(username);
   }
 
   async function fetchTopicDetail(topicId) {
@@ -958,7 +1300,12 @@
 
     if (hasUserReplied(detail.data, userId)) {
       const next = addReplyHistoryEntry(getPrunedReplyHistory(), topic.id);
-      await setState({ monitorReplyHistory: next });
+      const nextItems = addReplyItemEntry(getPrunedReplyItems(), buildReplyItemFromTopic(topic));
+      const patch = { monitorReplyHistory: next };
+      if (!replyItemsEqual(nextItems, currentState.monitorReplyItems)) {
+        patch.monitorReplyItems = nextItems;
+      }
+      await setState(patch);
       repliedSet.add(topic.id);
       return true;
     }
@@ -974,7 +1321,14 @@
     const posted = await postReply(topic.id, replyText);
     if (posted.ok) {
       const next = addReplyHistoryEntry(getPrunedReplyHistory(), topic.id);
-      await setState({ monitorReplyHistory: next });
+      const replyItem = buildReplyItemFromTopic(topic);
+      const nextItems = addReplyItemEntry(getPrunedReplyItems(), replyItem);
+      const patch = { monitorReplyHistory: next };
+      if (!replyItemsEqual(nextItems, currentState.monitorReplyItems)) {
+        patch.monitorReplyItems = nextItems;
+      }
+      await setState(patch);
+      notifyAutoReply(topic, replyItem ? formatReplyItemTime(replyItem.ts) : "");
       repliedSet.add(topic.id);
       return true;
     }
@@ -993,12 +1347,18 @@
 
   async function runMonitorCheck() {
     await ensureReplyHistoryPruned();
-    const userId = await getCurrentUserId();
-    if (!Number.isFinite(userId)) {
+    await ensureReplyItemsPruned();
+    const userInfo = await getCurrentUserInfo();
+    if (!Number.isFinite(userInfo.id) && !userInfo.username) {
       return { status: 0 };
+    }
+    const syncResult = await syncReplyHistoryIfNeeded(userInfo.username);
+    if (syncResult && syncResult.status === 429) {
+      return { status: 429 };
     }
 
     const repliedSet = replyHistoryToSet(getPrunedReplyHistory());
+    const userId = userInfo.id;
     let nextUrl = API_LATEST_URL;
     let pagesFetched = 0;
     let status = 200;

@@ -3,8 +3,11 @@
   "name": "Linux.do 自动浏览",
   "version": "0.1.0",
   "description": "按 /latest 顺序自动浏览 linux.do 帖子，随机停留，支持断点续跑。",
-  "permissions": ["storage"],
+  "permissions": ["storage", "notifications"],
   "host_permissions": ["https://linux.do/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["https://linux.do/*"],
