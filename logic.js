@@ -31,6 +31,19 @@
     backoffMaxMs: 10 * 60 * 1000
   };
 
+  const MONITOR_DEFAULTS = {
+    intervalMs: 30000,
+    maxPages: 2,
+    replyHistoryMax: 3000,
+    replyHistoryTtlMs: 90 * 24 * 60 * 60 * 1000,
+    replySyncIntervalMs: 10 * 60 * 1000,
+    replySyncMaxPages: 2,
+    replyItemsMax: 30,
+    enabledByDefault: false,
+    notifyThrottleMs: 10 * 1000,
+    notifyMaxPerWindow: 3
+  };
+
   const KEYWORD_DEFAULTS = [
     '抽奖',
     '福利',
@@ -174,6 +187,19 @@
     return new Set(ids);
   }
 
+  function computeNotifyThrottle({ timestamps, now, windowMs, maxPerWindow } = {}) {
+    const ts = Number.isFinite(now) ? now : Date.now();
+    const windowSize = Number.isFinite(windowMs) ? windowMs : 10_000;
+    const limit = Number.isFinite(maxPerWindow) ? maxPerWindow : 3;
+    const safe = Array.isArray(timestamps) ? timestamps : [];
+    const cutoff = ts - windowSize;
+    const filtered = safe.filter((item) => Number.isFinite(item) && item >= cutoff);
+    if (filtered.length >= limit) {
+      return { allowed: false, timestamps: filtered.slice(0, limit) };
+    }
+    return { allowed: true, timestamps: [ts, ...filtered].slice(0, limit) };
+  }
+
   function computeNextFetchAt({ now, status, backoffCount, jitterMs } = {}) {
     const ts = Number.isFinite(now) ? now : Date.now();
     if (status === 429) {
@@ -236,6 +262,7 @@
     OWNER_DEFAULTS,
     HISTORY_DEFAULTS,
     BATCH_DEFAULTS,
+    MONITOR_DEFAULTS,
     KEYWORD_DEFAULTS,
     REPLY_TEMPLATES,
     normalizeKeywords,
@@ -250,6 +277,7 @@
     pruneHistory,
     addHistoryEntry,
     historyToSet,
+    computeNotifyThrottle,
     computeNextFetchAt,
     shouldFetchMore,
     computeBatchPlan,

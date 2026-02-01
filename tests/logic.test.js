@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   DEFAULTS,
+  MONITOR_DEFAULTS,
   sanitizeTargetCount,
   shouldStopWhenQueueEmpty,
   buildRestartPatch,
@@ -17,7 +18,8 @@ const {
   matchTitleKeywords,
   pickReplyTemplate,
   computeStaleFlagPatch,
-  computeFetchSchedulePatch
+  computeFetchSchedulePatch,
+  computeNotifyThrottle
 } = require('../logic');
 
 function testSanitizeTargetCount() {
@@ -201,6 +203,42 @@ function testFetchSchedulePatch() {
   assert.strictEqual(networkErr.nextFetchAt >= now + 2000 && networkErr.nextFetchAt <= now + 5000, true);
 }
 
+function testMonitorDefaultsForNotify() {
+  assert.strictEqual(MONITOR_DEFAULTS.enabledByDefault, false);
+  assert.strictEqual(MONITOR_DEFAULTS.notifyThrottleMs, 10000);
+  assert.strictEqual(MONITOR_DEFAULTS.notifyMaxPerWindow, 3);
+}
+
+function testComputeNotifyThrottle() {
+  const now = 10_000;
+  const res1 = computeNotifyThrottle({
+    timestamps: [],
+    now,
+    windowMs: 10_000,
+    maxPerWindow: 3
+  });
+  assert.strictEqual(res1.allowed, true);
+  assert.deepStrictEqual(res1.timestamps, [now]);
+
+  const res2 = computeNotifyThrottle({
+    timestamps: [now - 1000, now - 2000],
+    now,
+    windowMs: 10_000,
+    maxPerWindow: 3
+  });
+  assert.strictEqual(res2.allowed, true);
+  assert.strictEqual(res2.timestamps.length, 3);
+
+  const res3 = computeNotifyThrottle({
+    timestamps: [now - 1000, now - 2000, now - 3000],
+    now,
+    windowMs: 10_000,
+    maxPerWindow: 3
+  });
+  assert.strictEqual(res3.allowed, false);
+  assert.deepStrictEqual(res3.timestamps, [now - 1000, now - 2000, now - 3000]);
+}
+
 testSanitizeTargetCount();
 testQueueEmptyStop();
 testRunIdPatches();
@@ -213,4 +251,6 @@ testFillPlan();
 testEnsureJsonApiUrl();
 testStaleFlagPatch();
 testFetchSchedulePatch();
+testMonitorDefaultsForNotify();
+testComputeNotifyThrottle();
 console.log('logic tests passed');
