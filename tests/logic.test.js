@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const {
   DEFAULTS,
   TAG_DEFAULTS,
@@ -21,7 +23,16 @@ const {
   computeStaleFlagPatch,
   computeFetchSchedulePatch,
   matchTopicTags,
-  computeNotifyThrottle
+  computeNotifyThrottle,
+  parseUsernameFromAvatarSrc,
+  computeMonitorUserStatus,
+  buildReplyText,
+  sanitizePanelCollapsed,
+  PANEL_DEFAULTS,
+  classifyReplyFailure,
+  computeMonitorTopicDelayMs,
+  isTopicFromToday,
+  shouldBreakMonitorTopicLoop
 } = require('../logic');
 
 function testSanitizeTargetCount() {
@@ -156,6 +167,13 @@ function testTagHelpers() {
   assert.strictEqual(matchTopicTags(tags, ['抽奖']), true);
   assert.strictEqual(matchTopicTags(tags, ['不存在']), false);
   assert.strictEqual(matchTopicTags([], ['抽奖']), false);
+  const objectTags = [
+    { id: 10, name: '抽奖', slug: '10-tag' },
+    { id: 1514, name: '高级推广', slug: '1514-tag' }
+  ];
+  assert.strictEqual(matchTopicTags(objectTags, ['抽奖']), true);
+  assert.strictEqual(matchTopicTags(objectTags, ['10-tag']), true);
+  assert.strictEqual(matchTopicTags(objectTags, ['lottery']), false);
   assert.strictEqual(Array.isArray(TAG_DEFAULTS), true);
 }
 
@@ -249,6 +267,134 @@ function testComputeNotifyThrottle() {
   assert.deepStrictEqual(res3.timestamps, [now - 1000, now - 2000, now - 3000]);
 }
 
+function testParseUsernameFromAvatarSrc() {
+  assert.strictEqual(
+    parseUsernameFromAvatarSrc('/user_avatar/linux.do/shengmaomao/96/123.png'),
+    'shengmaomao'
+  );
+  assert.strictEqual(
+    parseUsernameFromAvatarSrc('/letter_avatar/shengmaomao/96/5_c16b2ee14fe83ed9a59fc65fbec00f85.png'),
+    'shengmaomao'
+  );
+  assert.strictEqual(
+    parseUsernameFromAvatarSrc('https://linux.do/user_avatar/linux.do/foo%20bar/96/123.png'),
+    'foo bar'
+  );
+  assert.strictEqual(parseUsernameFromAvatarSrc('/assets/no-avatar.png'), null);
+}
+
+function testComputeMonitorUserStatus() {
+  assert.strictEqual(computeMonitorUserStatus({ id: 1, username: 'abc', status: 200 }), 200);
+  assert.strictEqual(computeMonitorUserStatus({ id: null, username: 'abc', status: 0 }), 200);
+  assert.strictEqual(computeMonitorUserStatus({ id: null, username: null, status: 429 }), 429);
+  assert.strictEqual(computeMonitorUserStatus({ id: null, username: null, status: 500 }), 500);
+  assert.strictEqual(computeMonitorUserStatus({ id: null, username: null, status: 0 }), 0);
+}
+
+function testBuildReplyText() {
+  const templates = ['参与抽奖，谢谢', '支持活动，感谢'];
+  assert.strictEqual(
+    buildReplyText(templates, { random: () => 0 }),
+    '参与抽奖，谢谢'
+  );
+  assert.strictEqual(
+    buildReplyText(['好'], { random: () => 0 }),
+    '参与'
+  );
+}
+
+function testSanitizePanelCollapsed() {
+  assert.strictEqual(sanitizePanelCollapsed(true, PANEL_DEFAULTS), true);
+  assert.strictEqual(sanitizePanelCollapsed(false, PANEL_DEFAULTS), false);
+  assert.strictEqual(sanitizePanelCollapsed(undefined, PANEL_DEFAULTS), false);
+  assert.strictEqual(
+    sanitizePanelCollapsed(undefined, { collapsedByDefault: true }),
+    true
+  );
+}
+
+function testClassifyReplyFailure() {
+  const already = classifyReplyFailure({
+    status: 422,
+    payload: { errors: ['You have already replied to this topic'] }
+  });
+  assert.strictEqual(already.kind, 'already_replied');
+  assert.strictEqual(already.markAsReplied, true);
+
+  const duplicate = classifyReplyFailure({
+    status: 422,
+    payload: { errors: ['is similar to what you posted before'] }
+  });
+  assert.strictEqual(duplicate.kind, 'duplicate');
+  assert.strictEqual(duplicate.markAsReplied, true);
+
+  const rejected = classifyReplyFailure({
+    status: 422,
+    payload: { errors: ['Body is too short'] }
+  });
+  assert.strictEqual(rejected.kind, 'rejected');
+  assert.strictEqual(rejected.markAsReplied, false);
+
+  const rate = classifyReplyFailure({
+    status: 429,
+    payload: { errors: ['Too many requests'] }
+  });
+  assert.strictEqual(rate.kind, 'rate_limited');
+  assert.strictEqual(rate.markAsReplied, false);
+}
+
+function testComputeMonitorTopicDelayMs() {
+  assert.strictEqual(
+    computeMonitorTopicDelayMs({ minMs: 600, maxMs: 1200, random: () => 0 }),
+    600
+  );
+  assert.strictEqual(
+    computeMonitorTopicDelayMs({ minMs: 600, maxMs: 1200, random: () => 1 }),
+    1200
+  );
+  assert.strictEqual(
+    computeMonitorTopicDelayMs({ minMs: 1200, maxMs: 600, random: () => 0.5 }),
+    1200
+  );
+}
+
+function testIsTopicFromToday() {
+  const now = Date.parse('2026-02-14T08:00:00+08:00');
+  const offsetMinutes = 8 * 60;
+  assert.strictEqual(
+    isTopicFromToday('2026-02-14T00:01:00+08:00', { now, offsetMinutes }),
+    true
+  );
+  assert.strictEqual(
+    isTopicFromToday('2026-02-13T23:59:59+08:00', { now, offsetMinutes }),
+    false
+  );
+  assert.strictEqual(
+    isTopicFromToday('invalid-date', { now, offsetMinutes }),
+    false
+  );
+  assert.strictEqual(
+    isTopicFromToday('', { now, offsetMinutes }),
+    false
+  );
+}
+
+function testShouldBreakMonitorTopicLoop() {
+  assert.strictEqual(shouldBreakMonitorTopicLoop(200), false);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(400), false);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(422), false);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(429), true);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(500), true);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(503), true);
+  assert.strictEqual(shouldBreakMonitorTopicLoop(0), true);
+}
+
+function testReplyTemplatesSingleSource() {
+  const contentPath = path.join(__dirname, '..', 'content.js');
+  const source = fs.readFileSync(contentPath, 'utf8');
+  assert.strictEqual(source.includes('const REPLY_TEMPLATES ='), false);
+}
+
 testSanitizeTargetCount();
 testQueueEmptyStop();
 testRunIdPatches();
@@ -264,4 +410,13 @@ testStaleFlagPatch();
 testFetchSchedulePatch();
 testMonitorDefaultsForNotify();
 testComputeNotifyThrottle();
+testParseUsernameFromAvatarSrc();
+testComputeMonitorUserStatus();
+testBuildReplyText();
+testSanitizePanelCollapsed();
+testClassifyReplyFailure();
+testComputeMonitorTopicDelayMs();
+testIsTopicFromToday();
+testShouldBreakMonitorTopicLoop();
+testReplyTemplatesSingleSource();
 console.log('logic tests passed');

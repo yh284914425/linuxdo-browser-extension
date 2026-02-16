@@ -1,48 +1,280 @@
+/* ============================================================
+   Linux.do 抽奖自动回复 — 侧边栏面板样式
+   Glassmorphism 风格 + 卡片布局 + 微动画
+   ============================================================ */
+
+:root {
+  --linuxdo-panel-width: clamp(280px, 24vw, 340px);
+  --panel-bg: rgba(18, 18, 24, 0.82);
+  --panel-blur: 24px;
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --panel-shadow: -10px 0 40px rgba(0, 0, 0, 0.45);
+  --accent-start: #6366f1;
+  --accent-end: #a855f7;
+  --accent-glow: rgba(139, 92, 246, 0.35);
+  --text-primary: #f0f0f5;
+  --text-secondary: #a1a1b5;
+  --text-muted: #6b6b80;
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.07);
+  --card-hover-bg: rgba(255, 255, 255, 0.08);
+  --link-color: #818cf8;
+  --link-hover: #a78bfa;
+  --switch-on: linear-gradient(135deg, #6366f1, #a855f7);
+  --switch-off: #3a3a4a;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --transition-fast: 0.18s ease;
+  --transition-normal: 0.25s ease;
+}
+
+/* ---------- body padding for panel ---------- */
+@media (min-width: 901px) {
+  html.linuxdo-auto-panel-expanded body {
+    padding-right: var(--linuxdo-panel-width) !important;
+    transition: padding-right var(--transition-normal);
+  }
+}
+
+/* =============================================
+   PANEL – main sidebar
+   ============================================= */
 #linuxdo-auto-panel {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  top: 56px;
+  right: 0;
+  bottom: 0;
   z-index: 2147483647;
-  min-width: 180px;
-  padding: 12px 12px 10px;
-  border-radius: 10px;
-  background: rgba(16, 16, 16, 0.92);
-  color: #f5f5f5;
-  font-family: "Helvetica Neue", Arial, sans-serif;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  width: var(--linuxdo-panel-width);
+  padding: 18px 16px 20px;
+  border-radius: var(--radius-lg) 0 0 0;
+
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--panel-blur));
+  -webkit-backdrop-filter: blur(var(--panel-blur));
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  border-left: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transition: transform var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+/* custom scrollbar */
+#linuxdo-auto-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+#linuxdo-auto-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#linuxdo-auto-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+#linuxdo-auto-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* collapsed state */
+html.linuxdo-auto-panel-collapsed #linuxdo-auto-panel {
+  transform: translateX(calc(100% + 8px));
+  pointer-events: none;
+}
+
+/* =============================================
+   PANEL HANDLE – collapse button
+   ============================================= */
+#linuxdo-auto-panel-handle {
+  position: fixed;
+  top: 120px;
+  right: 0;
+  z-index: 2147483647;
+  border: 0;
+  border-radius: 14px 0 0 14px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--panel-blur));
+  -webkit-backdrop-filter: blur(var(--panel-blur));
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: -6px 4px 20px rgba(0, 0, 0, 0.35);
+  display: none;
+  letter-spacing: 0.02em;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+#linuxdo-auto-panel-handle:hover {
+  background: rgba(30, 30, 42, 0.95);
+  box-shadow: -6px 4px 24px rgba(99, 102, 241, 0.25);
+}
+
+html.linuxdo-auto-panel-collapsed #linuxdo-auto-panel-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: handle-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes handle-pulse {
+
+  0%,
+  100% {
+    box-shadow: -6px 4px 20px rgba(0, 0, 0, 0.35);
+  }
+
+  50% {
+    box-shadow: -6px 4px 26px rgba(99, 102, 241, 0.35);
+  }
+}
+
+/* =============================================
+   TITLE ROW
+   ============================================= */
+#linuxdo-auto-panel .title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--panel-border);
+  position: relative;
+}
+
+/* gradient accent bar */
+#linuxdo-auto-panel .title-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 48px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent-start), var(--accent-end));
+  border-radius: 2px;
 }
 
 #linuxdo-auto-panel .title {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: linear-gradient(135deg, var(--text-primary) 60%, var(--link-color));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+#linuxdo-auto-panel .panel-collapse-btn {
+  border: 0;
+  margin: 0;
+  width: auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+#linuxdo-auto-panel .panel-collapse-btn:hover {
+  background: var(--card-hover-bg);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* =============================================
+   STATUS CARD — 状态行 + 开关行
+   ============================================= */
+#linuxdo-auto-panel .status-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  transition: background var(--transition-fast);
 }
 
 #linuxdo-auto-panel .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
-  margin: 4px 0;
+  font-size: 13px;
   gap: 8px;
 }
 
-#linuxdo-auto-panel .monitor-control {
-  display: flex;
+#linuxdo-auto-panel .row+.row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+#linuxdo-auto-panel .row-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* monitor status badge */
+#linuxdo-auto-panel .monitor-status {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-#linuxdo-auto-panel .monitor-status {
-  font-size: 11px;
-  color: #9be7ff;
+#linuxdo-auto-panel .status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+/* dot states: green for active, amber for cooling, grey default */
+#linuxdo-auto-panel .status-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+  animation: dot-blink 1.6s ease-in-out infinite;
+}
+
+#linuxdo-auto-panel .status-dot.cooling {
+  background: #facc15;
+  box-shadow: 0 0 6px rgba(250, 204, 21, 0.4);
+}
+
+@keyframes dot-blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* =============================================
+   SWITCH TOGGLE
+   ============================================= */
 #linuxdo-auto-panel .switch {
   position: relative;
   display: inline-block;
-  width: 34px;
-  height: 18px;
+  width: 38px;
+  height: 20px;
 }
 
 #linuxdo-auto-panel .switch input {
@@ -55,150 +287,190 @@
   position: absolute;
   cursor: pointer;
   inset: 0;
-  background: #555;
+  background: var(--switch-off);
   border-radius: 999px;
-  transition: background 0.2s ease;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 #linuxdo-auto-panel .switch .slider::before {
   position: absolute;
   content: "";
-  height: 14px;
-  width: 14px;
+  height: 16px;
+  width: 16px;
   left: 2px;
   top: 2px;
   background: #fff;
   border-radius: 50%;
-  transition: transform 0.2s ease;
+  transition: transform var(--transition-fast);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-#linuxdo-auto-panel .switch input:checked + .slider {
-  background: #2f80ed;
+#linuxdo-auto-panel .switch input:checked+.slider {
+  background: var(--switch-on);
+  box-shadow: 0 0 12px var(--accent-glow);
 }
 
-#linuxdo-auto-panel .switch input:checked + .slider::before {
-  transform: translateX(16px);
+#linuxdo-auto-panel .switch input:checked+.slider::before {
+  transform: translateX(18px);
 }
 
-#linuxdo-auto-panel .switch input:disabled + .slider {
-  background: #777;
+#linuxdo-auto-panel .switch input:disabled+.slider {
+  background: #333;
   cursor: not-allowed;
+  opacity: 0.5;
 }
 
-#linuxdo-auto-panel .status {
-  font-weight: 600;
-  color: #9be7ff;
-}
-
-#linuxdo-auto-panel button {
-  width: 100%;
-  margin-top: 8px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: #2f80ed;
-  color: white;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-#linuxdo-auto-panel .button-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-#linuxdo-auto-panel .button-row button {
-  width: 50%;
-  margin-top: 0;
-}
-
-#linuxdo-auto-panel button.secondary {
-  background: #3b3b3b;
-}
-
-#linuxdo-auto-panel button.warning {
-  background: #e74c3c;
-  width: 100%;
-}
-
-#linuxdo-auto-panel input[type="number"] {
-  width: 84px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
-  color: #f5f5f5;
-  font-size: 12px;
-  text-align: right;
-}
-
-#linuxdo-auto-panel button:disabled {
-  background: #666;
-  cursor: not-allowed;
-}
-
+/* =============================================
+   REPLY HISTORY
+   ============================================= */
 #linuxdo-auto-panel .reply-history {
-  margin-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  padding-top: 6px;
+  margin-top: 4px;
 }
 
 #linuxdo-auto-panel .reply-history summary {
   cursor: pointer;
-  font-size: 11px;
-  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
   list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  user-select: none;
+  transition: color var(--transition-fast);
+}
+
+#linuxdo-auto-panel .reply-history summary:hover {
+  color: var(--text-primary);
 }
 
 #linuxdo-auto-panel .reply-history summary::-webkit-details-marker {
   display: none;
 }
 
-#linuxdo-auto-panel .reply-history summary::before {
+#linuxdo-auto-panel .reply-history summary::after {
   content: "▸";
   display: inline-block;
-  margin-right: 6px;
+  font-size: 10px;
+  margin-left: auto;
   transition: transform 0.2s ease;
+  color: var(--text-muted);
 }
 
-#linuxdo-auto-panel .reply-history[open] summary::before {
+#linuxdo-auto-panel .reply-history[open] summary::after {
   transform: rotate(90deg);
 }
 
+/* reply list */
 #linuxdo-auto-panel #linuxdo-reply-list {
   list-style: none;
-  padding: 6px 0 0;
+  padding: 4px 0 0;
   margin: 0;
-  max-height: 160px;
+  max-height: 40vh;
   overflow-y: auto;
 }
 
+#linuxdo-auto-panel #linuxdo-reply-list::-webkit-scrollbar {
+  width: 3px;
+}
+
+#linuxdo-auto-panel #linuxdo-reply-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#linuxdo-auto-panel #linuxdo-reply-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+/* reply item cards */
 #linuxdo-auto-panel .reply-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 6px;
+  gap: 3px;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+#linuxdo-auto-panel .reply-item:hover {
+  background: var(--card-hover-bg);
+  border-color: rgba(255, 255, 255, 0.12);
+  transform: translateX(-2px);
 }
 
 #linuxdo-auto-panel .reply-item a {
-  color: #9be7ff;
+  color: var(--link-color);
   text-decoration: none;
-  font-size: 11px;
-  line-height: 1.2;
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 500;
+  transition: color var(--transition-fast);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 #linuxdo-auto-panel .reply-item a:hover {
-  text-decoration: underline;
+  color: var(--link-hover);
 }
 
 #linuxdo-auto-panel .reply-item-meta {
   font-size: 10px;
-  color: #9aa0a6;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 #linuxdo-auto-panel .reply-item.empty {
-  color: #9aa0a6;
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 16px 10px;
+  background: transparent;
+  border: 1px dashed var(--card-border);
+}
+
+/* =============================================
+   MOBILE LAYOUT (≤ 900px)
+   ============================================= */
+@media (max-width: 900px) {
+  html.linuxdo-auto-panel-expanded body {
+    padding-right: 0 !important;
+  }
+
+  #linuxdo-auto-panel {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    max-height: 60vh;
+    border-radius: var(--radius-lg);
+    border-left: 0;
+    border: 1px solid var(--panel-border);
+    box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  html.linuxdo-auto-panel-collapsed #linuxdo-auto-panel {
+    transform: translateY(calc(100% + 12px));
+  }
+
+  #linuxdo-auto-panel-handle {
+    top: auto;
+    right: 12px;
+    bottom: 14px;
+    border-radius: 999px;
+    padding: 10px 14px;
+  }
+
+  #linuxdo-auto-panel #linuxdo-reply-list {
+    max-height: 24vh;
+  }
 }

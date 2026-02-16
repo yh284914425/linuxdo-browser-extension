@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Linux.do 自动浏览",
+  "name": "Linux.do 抽奖自动回复",
   "version": "0.1.0",
-  "description": "按 /latest 顺序自动浏览 linux.do 帖子，随机停留，支持断点续跑。",
+  "description": "监控 linux.do 抽奖标签话题并自动回复，支持回复历史与系统通知。",
   "permissions": ["storage", "notifications"],
   "host_permissions": ["https://linux.do/*"],
   "background": {
@@ -17,6 +17,6 @@
     }
   ],
   "action": {
-    "default_title": "Linux.do 自动浏览"
+    "default_title": "Linux.do 抽奖自动回复"
   }
 }

@@ -7,6 +7,7 @@
     window.LinuxdoLogic = api;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, () => {
+  // 逻辑层纯函数：供 content/background 复用并可被单测覆盖。
   const DEFAULTS = {
     minTarget: 1,
     maxTarget: 1000,
@@ -39,9 +40,15 @@
     replySyncIntervalMs: 10 * 60 * 1000,
     replySyncMaxPages: 2,
     replyItemsMax: 30,
+    topicDelayMinMs: 600,
+    topicDelayMaxMs: 1200,
     enabledByDefault: false,
     notifyThrottleMs: 10 * 1000,
     notifyMaxPerWindow: 3
+  };
+
+  const PANEL_DEFAULTS = {
+    collapsedByDefault: false
   };
 
   const KEYWORD_DEFAULTS = [
@@ -60,18 +67,14 @@
   const TAG_DEFAULTS = ['抽奖'];
 
   const REPLY_TEMPLATES = [
-    '参与抽奖，谢谢',
-    '支持活动，感谢',
+    '参与一下，谢谢',
+    '感谢大佬',
     '来参与一下',
     '感谢福利分享',
-    '蹲一个好运',
-    '支持一下活动',
+    '求中求中',
     '来试试手气',
     '参与支持一下',
-    '感谢大佬分享',
-    '路过参与一下',
-    '参与活动支持',
-    '感谢福利活动'
+    '来啦来啦',
   ];
 
   function normalizeKeywords(list) {
@@ -87,11 +90,56 @@
     return keywords.some((key) => key && text.includes(key));
   }
 
+  function parseUsernameFromAvatarSrc(src) {
+    // 兼容普通头像和 letter_avatar 两类 URL。
+    const raw = String(src || '').trim();
+    if (!raw) return null;
+    const matchers = [
+      /\/user_avatar\/[^/]+\/([^/]+)\//i,
+      /\/letter_avatar\/([^/]+)\//i
+    ];
+    for (const matcher of matchers) {
+      const match = raw.match(matcher);
+      if (!match || !match[1]) continue;
+      try {
+        return decodeURIComponent(match[1]);
+      } catch (err) {
+        return match[1];
+      }
+    }
+    return null;
+  }
+
+  function computeMonitorUserStatus(userInfo = {}) {
+    // 只要拿到 id 或 username 就视为“可用用户态”。
+    const id = Number.isFinite(userInfo.id) ? userInfo.id : null;
+    const username = typeof userInfo.username === 'string' ? userInfo.username.trim() : '';
+    const status = Number.isFinite(userInfo.status) ? userInfo.status : 0;
+    if (Number.isFinite(id) || username) {
+      return 200;
+    }
+    return status;
+  }
+
   function matchTopicTags(tags, requiredTags = TAG_DEFAULTS) {
+    // 兼容 tags: string[] / {name,slug}[]。
     const safeTags = Array.isArray(tags) ? tags : [];
     const required = Array.isArray(requiredTags) ? requiredTags : [];
     if (required.length === 0) return false;
     const normalizedTags = safeTags
+      .flatMap((item) => {
+        if (item == null) return [];
+        if (typeof item === 'string' || typeof item === 'number') {
+          return [item];
+        }
+        if (typeof item === 'object') {
+          const values = [];
+          if (typeof item.name === 'string') values.push(item.name);
+          if (typeof item.slug === 'string') values.push(item.slug);
+          return values;
+        }
+        return [String(item)];
+      })
       .map((item) => String(item || '').trim())
       .filter((item) => item.length > 0)
       .map((item) => item.toLowerCase());
@@ -111,6 +159,102 @@
     const random = typeof options.random === 'function' ? options.random : Math.random;
     const idx = Math.min(Math.floor(random() * safe.length), safe.length - 1);
     return safe[idx];
+  }
+
+  function buildReplyText(list = REPLY_TEMPLATES, options = {}) {
+    // 回复内容兜底：长度过短时补“参与”。
+    let text = `${pickReplyTemplate(list, options) || ''}`.trim();
+    if (text.length < 4) {
+      text = `${text}参与`;
+    }
+    return text;
+  }
+
+  function computeMonitorTopicDelayMs({ minMs, maxMs, random } = {}) {
+    const min = Math.max(
+      0,
+      Number.isFinite(minMs) ? minMs : MONITOR_DEFAULTS.topicDelayMinMs
+    );
+    const maxCandidate = Number.isFinite(maxMs) ? maxMs : MONITOR_DEFAULTS.topicDelayMaxMs;
+    const max = Math.max(min, maxCandidate);
+    const rand = typeof random === 'function' ? random : Math.random;
+    const value = rand();
+    const ratio = Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0;
+    return Math.round(min + (max - min) * ratio);
+  }
+
+  // 监控循环中，哪些状态需要终止当前批次（避免连续失败放大请求）。
+  function shouldBreakMonitorTopicLoop(status) {
+    if (!Number.isFinite(status)) return false;
+    if (status === 429) return true;
+    if (status === 0) return true;
+    return status >= 500;
+  }
+
+  function formatDayKeyByOffset(ts, offsetMinutes) {
+    const shifted = new Date(ts + offsetMinutes * 60 * 1000);
+    const year = shifted.getUTCFullYear();
+    const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(shifted.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  // “今天”判断以本地时区为准，可通过 options.offsetMinutes 显式覆盖。
+  function isTopicFromToday(createdAt, options = {}) {
+    const raw = typeof createdAt === 'string' ? createdAt.trim() : '';
+    if (!raw) return false;
+    const createdTs = Date.parse(raw);
+    if (!Number.isFinite(createdTs)) return false;
+    const nowTs = Number.isFinite(options.now) ? options.now : Date.now();
+    const localOffset = -new Date(nowTs).getTimezoneOffset();
+    const offsetMinutes = Number.isFinite(options.offsetMinutes) ? options.offsetMinutes : localOffset;
+    return formatDayKeyByOffset(createdTs, offsetMinutes) === formatDayKeyByOffset(nowTs, offsetMinutes);
+  }
+
+  function classifyReplyFailure({ status, payload } = {}) {
+    const code = Number.isFinite(status) ? status : 0;
+    const texts = [];
+    if (payload && typeof payload === 'object') {
+      if (Array.isArray(payload.errors)) texts.push(...payload.errors);
+      if (Array.isArray(payload.messages)) texts.push(...payload.messages);
+      if (typeof payload.error === 'string') texts.push(payload.error);
+      if (typeof payload.message === 'string') texts.push(payload.message);
+      if (typeof payload.detail === 'string') texts.push(payload.detail);
+      if (typeof payload.error_type === 'string') texts.push(payload.error_type);
+    }
+    const errors = texts
+      .map((item) => String(item || '').trim())
+      .filter((item) => item.length > 0);
+    const joined = errors.join(' ').toLowerCase();
+
+    const contains = (list) => list.some((item) => joined.includes(item));
+    const rateKeywords = ['too many', 'too fast', 'rate limit', 'slow down', '请稍后', '太快', '频率', '429'];
+    if (code === 429 || contains(rateKeywords)) {
+      return { kind: 'rate_limited', markAsReplied: false, errors };
+    }
+
+    if (code !== 422) {
+      return { kind: 'failed', markAsReplied: false, errors };
+    }
+
+    const alreadyKeywords = ['already replied', 'already posted', '你已经回复', '已经回复', '已回复'];
+    if (contains(alreadyKeywords)) {
+      return { kind: 'already_replied', markAsReplied: true, errors };
+    }
+
+    const duplicateKeywords = ['similar to what you posted', 'duplicate', '重复', '相似', 'same as'];
+    if (contains(duplicateKeywords)) {
+      return { kind: 'duplicate', markAsReplied: true, errors };
+    }
+
+    return { kind: 'rejected', markAsReplied: false, errors };
+  }
+
+  function sanitizePanelCollapsed(value, defaults = PANEL_DEFAULTS) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    return Boolean(defaults && defaults.collapsedByDefault);
   }
 
   function sanitizeTargetCount(value, defaults = DEFAULTS) {
@@ -281,13 +425,22 @@
     HISTORY_DEFAULTS,
     BATCH_DEFAULTS,
     MONITOR_DEFAULTS,
+    PANEL_DEFAULTS,
     KEYWORD_DEFAULTS,
     TAG_DEFAULTS,
     REPLY_TEMPLATES,
     normalizeKeywords,
     matchTitleKeywords,
+    parseUsernameFromAvatarSrc,
+    computeMonitorUserStatus,
     matchTopicTags,
     pickReplyTemplate,
+    buildReplyText,
+    computeMonitorTopicDelayMs,
+    shouldBreakMonitorTopicLoop,
+    isTopicFromToday,
+    classifyReplyFailure,
+    sanitizePanelCollapsed,
     sanitizeTargetCount,
     ensureJsonApiUrl,
     shouldStopWhenQueueEmpty,
